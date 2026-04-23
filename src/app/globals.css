@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+  /* Green Co / assessor app theme */
+  --gc-page: #f2f9f4;
+  --gc-sidebar: #1a5c38;
+  --gc-primary: #2f8854;
+  --gc-primary-hover: #247848;
+  --gc-primary-soft: #dff0e4;
+  --gc-focus: #2f8b55;
+  --gc-focus-ring: #c6ebd2;
+  --gc-panel: #edf6f0;
+  --gc-muted-border: #c5ddd0;
+  --gc-muted-text: #2d6a46;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-gc-page: var(--gc-page);
+  --color-gc-sidebar: var(--gc-sidebar);
+  --color-gc-primary: var(--gc-primary);
+  --color-gc-primary-hover: var(--gc-primary-hover);
+  --color-gc-primary-soft: var(--gc-primary-soft);
+  --color-gc-focus: var(--gc-focus);
+  --color-gc-focus-ring: var(--gc-focus-ring);
+  --color-gc-panel: var(--gc-panel);
+  --color-gc-muted-border: var(--gc-muted-border);
+  --color-gc-muted-text: var(--gc-muted-text);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--gc-page);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/**
+ * Hand (pointer) cursor on controls that perform an action or navigation.
+ * Disabled controls use not-allowed so they read as non-interactive.
+ */
+:any-link,
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+[role="link"],
+[role="menuitem"],
+[role="option"],
+[role="tab"]:not([aria-disabled="true"]),
+label[for],
+input:not(:disabled):where(
+    [type="button"],
+    [type="submit"],
+    [type="reset"],
+    [type="checkbox"],
+    [type="radio"],
+    [type="file"],
+    [type="image"],
+    [type="range"]
+  ),
+select:not(:disabled),
+summary {
+  cursor: pointer;
+}
+
+button:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled,
+[aria-disabled="true"] {
+  cursor: not-allowed;
+}
