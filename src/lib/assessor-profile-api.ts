@@ -227,7 +227,13 @@ export async function patchAssessorSelfProfile(formData: FormData): Promise<unkn
 export function buildAssessorProfileFormData(
   values: AssessorProfileFormValues,
   files: Partial<Record<AssessorProfileFileKey, File | null>>,
+  options?: Readonly<{
+    includeBankDetails?: boolean;
+    includeDocuments?: boolean;
+  }>,
 ): FormData {
+  const includeBankDetails = options?.includeBankDetails ?? true;
+  const includeDocuments = options?.includeDocuments ?? true;
   const fd = new FormData();
   fd.append("name", values.name.trim());
   fd.append("email", values.email.trim());
@@ -259,11 +265,15 @@ export function buildAssessorProfileFormData(
     ["emergency_city", values.emergencyCity],
     ["emergency_state", values.emergencyState],
     ["emergency_pincode", values.emergencyPincode],
-    ["bank_name", values.bankName],
-    ["account_number", values.accountNumber],
-    ["branch_name", values.branchName],
-    ["ifsc_code", values.ifscCode],
   ];
+  if (includeBankDetails) {
+    optionalPairs.push(
+      ["bank_name", values.bankName],
+      ["account_number", values.accountNumber],
+      ["branch_name", values.branchName],
+      ["ifsc_code", values.ifscCode],
+    );
+  }
 
   for (const [key, value] of optionalPairs) {
     const trimmed = value.trim();
@@ -273,6 +283,9 @@ export function buildAssessorProfileFormData(
   }
 
   (Object.keys(files) as AssessorProfileFileKey[]).forEach((key) => {
+    if (!includeDocuments && key !== "profile_image") {
+      return;
+    }
     const file = files[key];
     if (file) {
       fd.append(key, file);

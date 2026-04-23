@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { GreencoLogo } from "@/components/GreencoLogo";
 import {
   AUTH_LOGIN_EMAIL_KEY,
@@ -35,6 +35,31 @@ function FieldError({ message }: Readonly<{ message: string }>) {
   return <p className="text-sm text-[#c0392b]">{message}</p>;
 }
 
+function Toast({
+  message,
+  onClose,
+}: Readonly<{
+  message: string;
+  onClose: () => void;
+}>) {
+  if (!message) return null;
+  return (
+    <div className="fixed right-4 top-4 z-[60] w-[min(420px,calc(100vw-2rem))] rounded border border-[#c3e6cb] bg-[#e8f6ea] px-3 py-2 text-sm text-[#2d6a3e] shadow-lg">
+      <div className="flex items-start justify-between gap-3">
+        <p className="font-medium">{message}</p>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded px-2 py-0.5 text-sm text-[#2d6a3e] hover:bg-[#d7f0dc]"
+          aria-label="Close"
+        >
+          ×
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function AssessorLoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
@@ -42,6 +67,23 @@ export default function AssessorLoginPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [emailError, setEmailError] = useState("");
   const [passwordError, setPasswordError] = useState("");
+  const [toastMessage, setToastMessage] = useState("");
+  const toastTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!globalThis.window) return;
+    const stored = globalThis.window.sessionStorage.getItem("gc_toast_login") ?? "";
+    if (!stored.trim()) return;
+    globalThis.window.sessionStorage.removeItem("gc_toast_login");
+    setToastMessage(stored.trim());
+    if (toastTimerRef.current !== null) {
+      globalThis.window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = globalThis.window.setTimeout(() => {
+      setToastMessage("");
+      toastTimerRef.current = null;
+    }, 3500);
+  }, []);
 
   const submitLogin = async () => {
     setEmailError("");
@@ -90,7 +132,18 @@ export default function AssessorLoginPage() {
   };
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[#f6faf6] px-4 py-10">
+    <>
+      <Toast
+        message={toastMessage}
+        onClose={() => {
+          if (toastTimerRef.current !== null && globalThis.window) {
+            globalThis.window.clearTimeout(toastTimerRef.current);
+            toastTimerRef.current = null;
+          }
+          setToastMessage("");
+        }}
+      />
+      <main className="flex min-h-screen items-center justify-center bg-[#f6faf6] px-4 py-10">
       <div className="w-full max-w-6xl">
         <div className="grid items-center gap-10 md:grid-cols-2">
           <section className="space-y-6">
@@ -243,6 +296,7 @@ export default function AssessorLoginPage() {
           <p>Designed for clarity, security, and ease of use.</p>
         </div>
       </div>
-    </main>
+      </main>
+    </>
   );
 }

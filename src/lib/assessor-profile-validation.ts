@@ -384,16 +384,7 @@ export function validateAssessorProfile(
       }
     }
 
-    const branch = values.branchName;
-    if (branch.trim()) {
-      if (!isNotOnlySpaces(branch) || !hasNoDoubleSpace(branch)) {
-        setErr(errors, "branchName", "Branch name cannot be empty or have double spaces.");
-      } else if (branch.trim().length < 3 || branch.trim().length > 50) {
-        setErr(errors, "branchName", "Branch name must be 3–50 characters.");
-      } else if (!isBranchNamePattern(branch)) {
-        setErr(errors, "branchName", "Branch name may contain letters, numbers, and spaces only.");
-      }
-    }
+    // Branch name is auto-filled from IFSC. Do not validate it client-side.
 
     const ifsc = values.ifscCode.trim();
     if (ifsc) {
@@ -418,6 +409,7 @@ export function validateAssessorProfile(
     }
 
     const REQUIRED_DOCS: DocStatusFileKey[] = [
+      "biodata",
       "cancelled_cheque",
       "gst_declaration",
       "vendor_registration_form",
@@ -571,16 +563,7 @@ export function validateAssessorProfile(
       }
     }
 
-    const branchD = values.branchName;
-    if (branchD.trim()) {
-      if (!isNotOnlySpaces(branchD) || !hasNoDoubleSpace(branchD)) {
-        setErr(errors, "branchName", "Branch name cannot be empty or have double spaces.");
-      } else if (branchD.trim().length < 3 || branchD.trim().length > 50) {
-        setErr(errors, "branchName", "Branch name must be 3–50 characters.");
-      } else if (!isBranchNamePattern(branchD)) {
-        setErr(errors, "branchName", "Branch name may contain letters, numbers, and spaces only.");
-      }
-    }
+    // Branch name is auto-filled from IFSC. Do not validate it client-side.
 
     const ifscD = values.ifscCode.trim();
     if (ifscD) {

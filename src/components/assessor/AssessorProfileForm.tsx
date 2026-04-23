@@ -105,7 +105,7 @@ function docStatusBadge(status: string | undefined): { label: string; className:
   if (normalized === "2") {
     return { label: "Attempted", className: "bg-[#fff7e6] text-[#8a5a00]" };
   }
-  return { label: "Uploaded", className: "bg-[#eef2ff] text-[#2f3a46]" };
+  return { label: "Pending", className: "bg-[#eef2ff] text-[#2f3a46]" };
 }
 
 function fileNameOrDash(file: File | null | undefined): string {
@@ -113,6 +113,64 @@ function fileNameOrDash(file: File | null | undefined): string {
     return file.name;
   }
   return "—";
+}
+
+function fileNameFromPath(pathOrUrl: string): string {
+  const raw = pathOrUrl.trim();
+  if (!raw) return "";
+  const noQuery = raw.split("?")[0] ?? raw;
+  const clean = noQuery.replace(/\/+$/, "");
+  const lastSlash = clean.lastIndexOf("/");
+  const base = lastSlash >= 0 ? clean.slice(lastSlash + 1) : clean;
+  try {
+    return decodeURIComponent(base);
+  } catch {
+    return base;
+  }
+}
+
+function pickServerDocFileName(payload: Record<string, unknown>, key: string): string {
+  const candidates = [
+    key,
+    `${key}_url`,
+    `${key}Url`,
+    `${key}_path`,
+    `${key}Path`,
+    `${key}_file`,
+    `${key}File`,
+    `${key}_filename`,
+    `${key}Filename`,
+    `${key}_name`,
+    `${key}Name`,
+  ];
+  for (const k of candidates) {
+    const value = payload[k];
+    if (typeof value === "string" && value.trim()) {
+      const name = fileNameFromPath(value);
+      if (name) return name;
+    }
+  }
+  return "";
+}
+
+function pickProfileImageUrl(payload: Record<string, unknown>): string {
+  const keys = [
+    "profile_image_url",
+    "profileImageUrl",
+    "profile_image",
+    "profileImage",
+    "company_logo",
+    "companyLogo",
+    "logo",
+    "logoUrl",
+  ];
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "";
 }
 
 function isProfileLockedFromPayload(payload: Record<string, unknown>): boolean {
@@ -331,11 +389,54 @@ function SearchableSelect({
   );
 }
 
+function Toast({
+  message,
+  onClose,
+}: Readonly<{
+  message: string;
+  onClose: () => void;
+}>) {
+  if (!message) return null;
+  return (
+    <div className="fixed right-4 top-4 z-[60] w-[min(420px,calc(100vw-2rem))] rounded border border-[#c3e6cb] bg-[#e8f6ea] px-3 py-2 text-sm text-[#2d6a3e] shadow-lg">
+      <div className="flex items-start justify-between gap-3">
+        <p className="font-medium">{message}</p>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded px-2 py-0.5 text-sm text-[#2d6a3e] hover:bg-[#d7f0dc]"
+          aria-label="Close"
+        >
+          ×
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function validateAccountNumberInline(raw: string): string {
+  const value = raw.trim();
+  if (!value) {
+    return "";
+  }
+  if (/\s{2,}/.test(raw)) {
+    return "Account number cannot contain consecutive spaces.";
+  }
+  if (value.length < 10 || value.length > 50) {
+    return "Account number must be 10–50 characters.";
+  }
+  if (!/^[a-zA-Z0-9]+$/.test(value)) {
+    return "Account number may contain letters and numbers only.";
+  }
+  return "";
+}
+
 export function AssessorProfileForm() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [saveError, setSaveError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState("");
+  const toastTimerRef = useRef<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [hasExistingProfile, setHasExistingProfile] = useState(false);
   const [assessorId, setAssessorId] = useState<string | null>(null);
@@ -343,17 +444,30 @@ export function AssessorProfileForm() {
   const [files, setFiles] = useState<Partial<Record<AssessorProfileFileKey, File | null>>>({});
   const [fieldErrors, setFieldErrors] = useState<ProfileFieldErrors>({});
   const [hasServerProfileImage, setHasServerProfileImage] = useState(false);
+  const [serverProfileImageUrl, setServerProfileImageUrl] = useState("");
+  const [profileImagePreviewUrl, setProfileImagePreviewUrl] = useState("");
   const [docStatuses, setDocStatuses] = useState<Record<DocStatusFileKey, string>>(emptyDocCheckStatuses());
+  const [serverDocNames, setServerDocNames] = useState<Record<DocStatusFileKey, string>>(
+    emptyDocCheckStatuses() as Record<DocStatusFileKey, string>,
+  );
   const snapshotRef = useRef<AssessorProfileFormValues | null>(null);
   const filesSnapshotRef = useRef<Partial<Record<AssessorProfileFileKey, File | null>>>({});
   const docStatusesSnapshotRef = useRef<Record<DocStatusFileKey, string>>(emptyDocCheckStatuses());
   const hasServerProfileImageSnapshotRef = useRef(false);
+  const serverProfileImageUrlSnapshotRef = useRef("");
+  const serverDocNamesSnapshotRef = useRef<Record<DocStatusFileKey, string>>(
+    emptyDocCheckStatuses() as Record<DocStatusFileKey, string>,
+  );
   const [savingKind, setSavingKind] = useState<"draft" | "final" | null>(null);
   const [activeTab, setActiveTab] = useState<ProfileTab>("profile");
   const [showFinalSubmitConfirm, setShowFinalSubmitConfirm] = useState(false);
   const [ifscLookupLoading, setIfscLookupLoading] = useState(false);
   const [ifscLookupError, setIfscLookupError] = useState("");
+  const ifscLookupTimerRef = useRef<number | null>(null);
+  const lastIfscLookupRef = useRef<string>("");
+  const accountNumberTimerRef = useRef<number | null>(null);
   const [profileLocked, setProfileLocked] = useState(false);
+  const [editMode, setEditMode] = useState(false);
   const [assessorGrades, setAssessorGrades] = useState<string[]>([]);
   const [assessorGradesError, setAssessorGradesError] = useState("");
   const [stateOptions, setStateOptions] = useState<SelectOption[]>([]);
@@ -365,6 +479,7 @@ export function AssessorProfileForm() {
   const fileInputsRef = useRef<Partial<Record<AssessorProfileFileKey, HTMLInputElement | null>>>(
     {},
   );
+  const profileImageInputRef = useRef<HTMLInputElement | null>(null);
 
   const setField = useCallback(<K extends keyof AssessorProfileFormValues>(key: K, value: AssessorProfileFormValues[K]) => {
     setForm((previous) => ({ ...previous, [key]: value }));
@@ -403,6 +518,9 @@ export function AssessorProfileForm() {
     [clearFieldError, fieldErrors, form, setField],
   );
 
+  const isRejected = approvalStatus === "Rejected";
+  const showUpdateButton = isRejected && !editMode;
+
   useEffect(() => {
     startTransition(() => {
       const id = getAssessorIdFromStoredUser();
@@ -435,10 +553,24 @@ export function AssessorProfileForm() {
           applyValues(mapped);
           const doc = extractDocCheckStatuses(payload);
           const hasImg = extractHasProfileImageFromServer(payload);
+          const imgUrl = pickProfileImageUrl(payload);
+          const docNames: Record<DocStatusFileKey, string> = {
+            biodata: pickServerDocFileName(payload, "biodata"),
+            cancelled_cheque: pickServerDocFileName(payload, "cancelled_cheque"),
+            gst_declaration: pickServerDocFileName(payload, "gst_declaration"),
+            vendor_registration_form: pickServerDocFileName(payload, "vendor_registration_form"),
+            non_disclosure_agreement: pickServerDocFileName(payload, "non_disclosure_agreement"),
+            health_declaration: pickServerDocFileName(payload, "health_declaration"),
+            pan_card: pickServerDocFileName(payload, "pan_card"),
+          };
           setDocStatuses(doc);
           docStatusesSnapshotRef.current = doc;
+          setServerDocNames(docNames);
+          serverDocNamesSnapshotRef.current = docNames;
           setHasServerProfileImage(hasImg);
           hasServerProfileImageSnapshotRef.current = hasImg;
+          setServerProfileImageUrl(imgUrl);
+          serverProfileImageUrlSnapshotRef.current = imgUrl;
           setHasExistingProfile(true);
 
           // If assessor updated profile/docs, approval should follow doc statuses:
@@ -466,11 +598,30 @@ export function AssessorProfileForm() {
             typeof remarksValue === "string" ? remarksValue.trim() : String(remarksValue ?? "").trim();
           setApprovalRemarks(remarks);
 
-          // Lock the form once assessor has final-submitted (backend sets `profile_updated`),
-          // but allow re-upload flows when admin marks specific docs as rejected (status "2").
+          // Lock behavior:
+          // - Approved => locked
+          // - Pending after submission => locked (some backends don't reliably return `profile_updated`,
+          //   so treat "Pending" + any uploaded doc/image as submitted)
+          // - Rejected => unlocked for profile fields, but only doc status "2" can re-upload
+          const hasAnyUploadedDoc =
+            Object.values(doc).some((value) => String(value).trim() !== "0") ||
+            Object.values(docNames).some((value) => Boolean(value?.trim())) ||
+            hasImg ||
+            Boolean(imgUrl);
+
           const locked =
-            derivedStatus === "Approved" || (isProfileLockedFromPayload(payload) && derivedStatus !== "Rejected");
-          setProfileLocked(locked);
+            derivedStatus === "Approved" ||
+            (derivedStatus === "Pending" && hasAnyUploadedDoc) ||
+            (isProfileLockedFromPayload(payload) && derivedStatus !== "Rejected");
+
+          // Rejected flow:
+          // - by default keep locked and show "Update" button
+          // - once user clicks Update, editMode=true and we unlock everything except non-rejected docs upload
+          const baseLocked = derivedStatus === "Rejected" ? true : locked;
+          setProfileLocked(editMode ? false : baseLocked);
+          if (derivedStatus !== "Rejected") {
+            setEditMode(false);
+          }
         })
         .catch((error: unknown) => {
           if (error instanceof AuthApiError && error.status === 404) {
@@ -481,8 +632,13 @@ export function AssessorProfileForm() {
             const blankDoc = emptyDocCheckStatuses();
             setDocStatuses(blankDoc);
             docStatusesSnapshotRef.current = blankDoc;
+            const blankNames = blankDoc as Record<DocStatusFileKey, string>;
+            setServerDocNames(blankNames);
+            serverDocNamesSnapshotRef.current = blankNames;
             setHasServerProfileImage(false);
             hasServerProfileImageSnapshotRef.current = false;
+            setServerProfileImageUrl("");
+            serverProfileImageUrlSnapshotRef.current = "";
             applyValues({
               ...emptyForm,
               email: loginEmail,
@@ -495,7 +651,7 @@ export function AssessorProfileForm() {
           setLoading(false);
         });
     });
-  }, [applyValues]);
+  }, [applyValues, editMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -560,6 +716,11 @@ export function AssessorProfileForm() {
   const handleCancel = () => {
     setSaveError("");
     setSaveSuccess("");
+    if (toastTimerRef.current !== null) {
+      globalThis.window?.clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    setEditMode(false);
     setFieldErrors({});
     setIfscLookupError("");
     if (snapshotRef.current) {
@@ -567,6 +728,8 @@ export function AssessorProfileForm() {
       setFiles({ ...filesSnapshotRef.current });
       setDocStatuses({ ...docStatusesSnapshotRef.current });
       setHasServerProfileImage(hasServerProfileImageSnapshotRef.current);
+      setServerProfileImageUrl(serverProfileImageUrlSnapshotRef.current);
+      setServerDocNames({ ...serverDocNamesSnapshotRef.current });
     } else {
       const loginEmail = getLoginEmailFromStorage();
       setForm({ ...emptyForm, email: loginEmail });
@@ -576,8 +739,37 @@ export function AssessorProfileForm() {
       docStatusesSnapshotRef.current = blankDoc;
       setHasServerProfileImage(false);
       hasServerProfileImageSnapshotRef.current = false;
+      setServerProfileImageUrl("");
+      serverProfileImageUrlSnapshotRef.current = "";
+      const blankNames = blankDoc as Record<DocStatusFileKey, string>;
+      setServerDocNames(blankNames);
+      serverDocNamesSnapshotRef.current = blankNames;
+    }
+
+    // After cancel, keep submitted profiles locked (Pending/Approved/Rejected view mode).
+    if (approvalStatus) {
+      setProfileLocked(true);
     }
   };
+
+  useEffect(() => {
+    if (!files.profile_image) {
+      if (profileImagePreviewUrl) {
+        URL.revokeObjectURL(profileImagePreviewUrl);
+      }
+      setProfileImagePreviewUrl("");
+      return;
+    }
+    const nextUrl = URL.createObjectURL(files.profile_image);
+    if (profileImagePreviewUrl) {
+      URL.revokeObjectURL(profileImagePreviewUrl);
+    }
+    setProfileImagePreviewUrl(nextUrl);
+    return () => {
+      URL.revokeObjectURL(nextUrl);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [files.profile_image]);
 
   const validateProfileStep = (): ProfileFieldErrors => {
     const errors: ProfileFieldErrors = {};
@@ -626,24 +818,42 @@ export function AssessorProfileForm() {
       return;
     }
 
-    const saved = await persistProfile(false);
-    if (saved) {
+    setSavingKind("draft");
+    setSaving(true);
+    try {
+      const body = buildAssessorProfileFormData(form, files, {
+        includeBankDetails: false,
+        includeDocuments: false,
+      });
+      await patchAssessorSelfProfile(body);
+      setHasExistingProfile(true);
+      setFieldErrors({});
+      snapshotRef.current = { ...form };
+      filesSnapshotRef.current = { ...files };
+      setFiles((prev) => ({ ...prev, profile_image: prev.profile_image ?? null }));
+    } catch (error) {
+      setSaveError(error instanceof AuthApiError ? error.message : "Could not save profile.");
+    } finally {
+      setSaving(false);
+      setSavingKind(null);
+      // Even if draft-save fails (backend may still require bank/docs),
+      // allow user to proceed to step-2 to complete bank + documents.
       setActiveTab("bankDocs");
     }
   };
 
-  const handleIfscBlur = async () => {
-    const normalized = form.ifscCode.trim().toUpperCase();
-    setField("ifscCode", normalized);
-    setIfscLookupError("");
-    if (!normalized) {
-      return;
-    }
+  const runIfscLookup = async (normalized: string) => {
+    if (!normalized) return;
     if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(normalized)) {
       setIfscLookupError("Enter valid IFSC format (example: SBIN0005943).");
       return;
     }
+    if (lastIfscLookupRef.current === normalized) {
+      return;
+    }
+    lastIfscLookupRef.current = normalized;
 
+    setIfscLookupError("");
     setIfscLookupLoading(true);
     try {
       const details = await lookupBankDetailsByIfsc(normalized);
@@ -692,7 +902,17 @@ export function AssessorProfileForm() {
     try {
       await patchAssessorSelfProfile(body);
       setHasExistingProfile(true);
-      setSaveSuccess(finalSubmit ? "Profile submitted." : "Profile saved.");
+      // Once saved/submitted successfully, don't keep showing old validation states.
+      setFieldErrors({});
+      const toastMessage = finalSubmit ? "Profile created successfully." : "Profile saved successfully.";
+      setSaveSuccess(toastMessage);
+      if (toastTimerRef.current !== null) {
+        globalThis.window?.clearTimeout(toastTimerRef.current);
+      }
+      toastTimerRef.current = globalThis.window?.setTimeout(() => {
+        setSaveSuccess("");
+        toastTimerRef.current = null;
+      }, 3500) ?? null;
       snapshotRef.current = { ...form };
       filesSnapshotRef.current = { ...files };
       docStatusesSnapshotRef.current = { ...docStatuses };
@@ -702,6 +922,10 @@ export function AssessorProfileForm() {
         setHasServerProfileImage(true);
       }
       setFiles({});
+      if (finalSubmit) {
+        setProfileLocked(true);
+        setEditMode(false);
+      }
       return true;
     } catch (error) {
       setSaveError(error instanceof AuthApiError ? error.message : "Could not save profile.");
@@ -729,7 +953,18 @@ export function AssessorProfileForm() {
   }
 
   return (
-    <section className="rounded border border-[#dfe3ec] bg-white">
+    <>
+      <Toast
+        message={saveSuccess}
+        onClose={() => {
+          if (toastTimerRef.current !== null) {
+            globalThis.window?.clearTimeout(toastTimerRef.current);
+            toastTimerRef.current = null;
+          }
+          setSaveSuccess("");
+        }}
+      />
+      <section className="rounded border border-[#dfe3ec] bg-white">
       <div className="border-b border-[#e2e6ef] px-4 py-3">
         <p className="text-sm font-semibold text-[#3a4352]">Profile Details</p>
       </div>
@@ -777,43 +1012,67 @@ export function AssessorProfileForm() {
           </div>
         ) : null}
 
-        {saveError ? (
-          <p className="rounded border border-[#f5c6cb] bg-[#fdeaea] px-3 py-2 text-sm text-[#a94442]">{saveError}</p>
-        ) : null}
-        {saveSuccess ? (
-          <p className="rounded border border-[#c3e6cb] bg-[#e8f6ea] px-3 py-2 text-sm text-[#2d6a3e]">{saveSuccess}</p>
-        ) : null}
-
         {activeTab === "profile" ? (
           <>
             <div>
               <p className="mb-2 text-xs font-semibold text-[#4f5a68]">Basic Details</p>
               <div className="grid gap-4 md:grid-cols-[220px_1fr]">
                 <div className="space-y-2">
-                  <div className="flex h-32 w-32 items-center justify-center rounded-full border border-dashed border-[#b7c4d6] bg-[#f7f9fc]">
-                    <svg className="h-14 w-14 text-[#98a4b3]" viewBox="0 0 24 24" fill="none" aria-hidden>
-                      <circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="1.6" />
-                      <path
-                        d="M5 19.2c0-3 3-5.2 7-5.2s7 2.2 7 5.2"
-                        stroke="currentColor"
-                        strokeWidth="1.6"
-                        strokeLinecap="round"
+                  <div className="flex h-32 w-32 items-center justify-center overflow-hidden rounded-full border border-dashed border-[#b7c4d6] bg-[#f7f9fc]">
+                    {profileImagePreviewUrl || serverProfileImageUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={profileImagePreviewUrl || serverProfileImageUrl}
+                        alt="Profile"
+                        className="h-full w-full object-cover"
                       />
-                    </svg>
+                    ) : (
+                      <svg className="h-14 w-14 text-[#98a4b3]" viewBox="0 0 24 24" fill="none" aria-hidden>
+                        <circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="1.6" />
+                        <path
+                          d="M5 19.2c0-3 3-5.2 7-5.2s7 2.2 7 5.2"
+                          stroke="currentColor"
+                          strokeWidth="1.6"
+                          strokeLinecap="round"
+                        />
+                      </svg>
+                    )}
                   </div>
                   {!profileLocked ? (
                     <div className="space-y-1">
                       <p className="text-xs font-medium text-[#606a78]">Profile image (PNG / JPEG)</p>
-                      <input
-                        type="file"
-                        accept="image/png,image/jpeg,image/jpg"
-                        className={`max-w-[220px] text-xs ${fieldErrors.profile_image ? "rounded border border-[#c62828] p-1" : ""}`}
-                        onChange={(event) => {
-                          const file = event.target.files?.[0] ?? null;
-                          setFiles((previous) => ({ ...previous, profile_image: file }));
-                          clearFieldError("profile_image");
-                        }}
-                      />
+                      <div className="flex max-w-[260px] items-center gap-2">
+                        <input
+                          ref={profileImageInputRef}
+                          type="file"
+                          accept="image/png,image/jpeg,image/jpg"
+                          className="hidden"
+                          onChange={(event) => {
+                            const file = event.target.files?.[0] ?? null;
+                            setFiles((previous) => ({ ...previous, profile_image: file }));
+                            clearFieldError("profile_image");
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className={`rounded border bg-white px-2 py-1 text-xs text-[#3b79b3] hover:bg-[#f3f7ff] ${
+                            fieldErrors.profile_image ? "border-[#c62828]" : "border-[#d2dbe8]"
+                          }`}
+                          onClick={() => profileImageInputRef.current?.click()}
+                        >
+                          Upload
+                        </button>
+                        {profileImagePreviewUrl || serverProfileImageUrl ? (
+                          <a
+                            className="rounded border border-[#d2dbe8] bg-white px-2 py-1 text-xs text-[#3b79b3] hover:bg-[#f3f7ff]"
+                            href={profileImagePreviewUrl || serverProfileImageUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            View
+                          </a>
+                        ) : null}
+                      </div>
                       {fieldErrors.profile_image ? (
                         <p className="text-xs text-[#c62828]">{fieldErrors.profile_image}</p>
                       ) : null}
@@ -993,23 +1252,32 @@ export function AssessorProfileForm() {
             </div>
 
             <div className="flex flex-wrap justify-end gap-2">
+              {showUpdateButton ? (
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => {
+                    setEditMode(true);
+                    setProfileLocked(false);
+                  }}
+                  className="rounded bg-[var(--gc-primary)] px-4 py-1.5 text-xs text-white hover:bg-[var(--gc-primary-hover)] disabled:opacity-60"
+                >
+                  Update
+                </button>
+              ) : null}
               <button
                 type="button"
                 disabled={saving || profileLocked}
                 onClick={() => {
-                  void saveAndContinue();
+                  void (editMode ? persistProfile(false) : saveAndContinue());
                 }}
-                className="rounded bg-[var(--gc-primary)] px-4 py-1.5 text-xs text-white hover:bg-[var(--gc-primary-hover)] disabled:opacity-60"
+                className={`${profileLocked ? "hidden" : ""} rounded bg-[var(--gc-primary)] px-4 py-1.5 text-xs text-white hover:bg-[var(--gc-primary-hover)] disabled:opacity-60`}
               >
-                {saving && savingKind === "draft" ? "Saving…" : "Save & Continue"}
-              </button>
-              <button
-                type="button"
-                disabled={saving}
-                onClick={handleCancel}
-                className="rounded border border-[#d5dae3] bg-white px-4 py-1.5 text-xs text-[#667083] disabled:opacity-60"
-              >
-                Cancel
+                {saving && savingKind === "draft"
+                  ? "Saving…"
+                  : editMode
+                    ? "Save"
+                    : "Save & Continue"}
               </button>
             </div>
           </>
@@ -1030,9 +1298,32 @@ export function AssessorProfileForm() {
                       setField("ifscCode", next);
                       clearFieldError("ifscCode");
                       setIfscLookupError("");
+
+                      const normalized = next.trim().toUpperCase();
+                      if (ifscLookupTimerRef.current !== null) {
+                        globalThis.window?.clearTimeout(ifscLookupTimerRef.current);
+                        ifscLookupTimerRef.current = null;
+                      }
+                      if (!normalized) {
+                        setIfscLookupLoading(false);
+                        lastIfscLookupRef.current = "";
+                        return;
+                      }
+                      // Trigger lookup immediately once IFSC becomes valid (11 chars), with small debounce.
+                      ifscLookupTimerRef.current =
+                        globalThis.window?.setTimeout(() => {
+                          void runIfscLookup(normalized);
+                          ifscLookupTimerRef.current = null;
+                        }, 250) ?? null;
                     }}
                     onBlur={() => {
-                      void handleIfscBlur();
+                      const normalized = form.ifscCode.trim().toUpperCase();
+                      setField("ifscCode", normalized);
+                      if (ifscLookupTimerRef.current !== null) {
+                        globalThis.window?.clearTimeout(ifscLookupTimerRef.current);
+                        ifscLookupTimerRef.current = null;
+                      }
+                      void runIfscLookup(normalized);
                     }}
                     className={`h-8 w-full rounded border bg-white px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
                       fieldErrors.ifscCode || ifscLookupError
@@ -1049,7 +1340,54 @@ export function AssessorProfileForm() {
                 </div>
                 <TextField label="Bank Name *" {...bindText("bankName")} />
                 <TextField label="Branch Name" {...bindText("branchName")} />
-                <TextField label="Account Number *" {...bindText("accountNumber")} />
+                <div className="space-y-1">
+                  <label htmlFor="account-number" className="text-xs font-medium text-[#606a78]">
+                    Account Number <span className="text-[#d63f3f]">*</span>
+                  </label>
+                  <input
+                    id="account-number"
+                    value={form.accountNumber}
+                    onChange={(event) => {
+                      const next = event.target.value;
+                      setField("accountNumber", next);
+                      if (accountNumberTimerRef.current !== null) {
+                        globalThis.window?.clearTimeout(accountNumberTimerRef.current);
+                        accountNumberTimerRef.current = null;
+                      }
+                      // Validate while typing with small debounce for immediate feedback.
+                      accountNumberTimerRef.current =
+                        globalThis.window?.setTimeout(() => {
+                          const msg = validateAccountNumberInline(next);
+                          setFieldErrors((prev) => {
+                            if (!msg) {
+                              if (!prev.accountNumber) return prev;
+                              const copy = { ...prev };
+                              delete copy.accountNumber;
+                              return copy;
+                            }
+                            return { ...prev, accountNumber: msg };
+                          });
+                          accountNumberTimerRef.current = null;
+                        }, 150) ?? null;
+                    }}
+                    onBlur={() => {
+                      const msg = validateAccountNumberInline(form.accountNumber);
+                      if (msg) {
+                        setFieldErrors((prev) => ({ ...prev, accountNumber: msg }));
+                      }
+                    }}
+                    disabled={profileLocked}
+                    className={`h-8 w-full rounded border bg-white px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
+                      fieldErrors.accountNumber
+                        ? "border-[#c62828] focus:border-[#c62828] focus:ring-[#f8d7da]"
+                        : "border-[#d7dbe4] focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
+                    }`}
+                    aria-invalid={fieldErrors.accountNumber ? true : undefined}
+                  />
+                  {fieldErrors.accountNumber ? (
+                    <p className="text-xs text-[#c62828]">{fieldErrors.accountNumber}</p>
+                  ) : null}
+                </div>
               </div>
             </div>
 
@@ -1064,96 +1402,86 @@ export function AssessorProfileForm() {
                 <div className="divide-y divide-[#eef2f7]">
                   {DOCUMENT_ROWS.map((row, index) => {
                     const docKey = row.key as DocStatusFileKey;
-                    const badge = docStatusBadge(docStatuses[docKey]);
+                    const serverName = serverDocNames[docKey]?.trim() ?? "";
+                    const rawStatus = (docStatuses[docKey] ?? "0").trim();
+                    const effectiveStatus =
+                      rawStatus !== "0" ? rawStatus : serverName ? "3" : "0";
+                    const badge = docStatusBadge(effectiveStatus);
                     const selected = files[row.key] ?? null;
                     const hasSelected = Boolean(selected);
-                    const hasServer = (docStatuses[docKey] ?? "0") !== "0";
+                    const hasServer = effectiveStatus !== "0";
                     const hasFile = hasSelected || hasServer;
                     const canUploadDoc =
                       approvalStatus === "Rejected"
                         ? !profileLocked && docStatuses[docKey] === "2"
                         : !profileLocked && (!hasServer || docStatuses[docKey] === "2");
-                    const borderClass = fieldErrors[row.key] ? "border-[#c62828]" : "border-[#d7dbe4]";
                     let fileLabel = "No file selected";
                     if (hasSelected) {
                       fileLabel = fileNameOrDash(selected);
                     } else if (hasServer) {
-                      fileLabel = "Uploaded File";
+                      fileLabel = serverName || "Uploaded File";
                     }
-                    const showAllowedHint = !hasFile;
 
                     return (
-                      <div key={row.key} className="grid grid-cols-12 gap-2 px-3 py-3">
-                        <div className="col-span-12 sm:col-span-3">
-                          <p className="text-xs text-[#4f5a68]">
-                            {index + 1}. {row.label} <span className="text-[#d63f3f]">*</span>
-                          </p>
-                          <p className="mt-2 text-[11px] text-[#7a8798]">Approval Status:</p>
-                          {badge ? (
-                            <span className={`mt-1 inline-flex rounded px-2 py-0.5 text-[11px] font-semibold ${badge.className}`}>
-                              {badge.label}
-                            </span>
-                          ) : (
-                            <span className="mt-1 inline-flex rounded bg-[#f1f4f8] px-2 py-0.5 text-[11px] font-semibold text-[#5f6876]">
-                              —
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="col-span-12 sm:col-span-9">
-                          <div className={`rounded border ${borderClass} bg-white p-2`}>
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div className="min-w-[220px]">
-                                <p className="text-[11px] font-semibold text-[#5f6876]">Uploaded File</p>
-                                <p className="text-xs text-[#2f3a46]">{fileLabel}</p>
-                                {showAllowedHint ? (
-                                  <p className="mt-1 text-[11px] text-[#7a8798]">Allowed: PDF, JPG, PNG</p>
-                                ) : null}
-                              </div>
-                              <div className="flex items-center gap-2">
-                                {canUploadDoc ? (
-                                  <>
-                                    <input
-                                      ref={(node) => {
-                                        fileInputsRef.current[row.key] = node;
-                                      }}
-                                      type="file"
-                                      accept="application/pdf,image/jpg,image/jpeg,image/png"
-                                      className="hidden"
-                                      onChange={(event) => {
-                                        const file = event.target.files?.[0] ?? null;
-                                        setFiles((previous) => ({ ...previous, [row.key]: file }));
-                                        clearFieldError(row.key);
-                                      }}
-                                    />
-                                    <button
-                                      type="button"
-                                      className="rounded border border-[#d2dbe8] bg-white px-2 py-1 text-xs text-[#3b79b3] hover:bg-[#f3f7ff]"
-                                      onClick={() => fileInputsRef.current[row.key]?.click()}
-                                    >
-                                      Upload
-                                    </button>
-                                  </>
-                                ) : (
-                                  <span className="text-[11px] font-medium text-[#7a8798]">
-                                    Upload locked
-                                  </span>
-                                )}
-                                {hasSelected ? (
-                                  <a
-                                    className="rounded border border-[#d2dbe8] bg-white px-2 py-1 text-xs text-[#3b79b3] hover:bg-[#f3f7ff]"
-                                    href={URL.createObjectURL(selected!)}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                  >
-                                    View
-                                  </a>
-                                ) : null}
-                              </div>
-                            </div>
+                      <div
+                        key={row.key}
+                        className={`flex flex-col gap-2 px-3 py-3 sm:flex-row sm:items-center sm:justify-between ${
+                          fieldErrors[row.key] ? "bg-[#fff7f7]" : ""
+                        }`}
+                      >
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-xs font-medium text-[#2f3a46]">
+                              {index + 1}. {row.label} <span className="text-[#d63f3f]">*</span>
+                            </p>
+                            {badge ? (
+                              <span className={`inline-flex rounded px-2 py-0.5 text-[11px] font-semibold ${badge.className}`}>
+                                {badge.label}
+                              </span>
+                            ) : null}
                           </div>
+                          <p className="mt-1 truncate text-xs text-[#5f6876]">
+                            {fileLabel}
+                          </p>
                           {fieldErrors[row.key] ? (
                             <p className="mt-1 text-xs text-[#c62828]">{fieldErrors[row.key]}</p>
+                          ) : null}
+                        </div>
+
+                        <div className="flex flex-shrink-0 items-center justify-end gap-2">
+                          {canUploadDoc ? (
+                            <>
+                              <input
+                                ref={(node) => {
+                                  fileInputsRef.current[row.key] = node;
+                                }}
+                                type="file"
+                                accept="application/pdf,image/jpg,image/jpeg,image/png"
+                                className="hidden"
+                                onChange={(event) => {
+                                  const file = event.target.files?.[0] ?? null;
+                                  setFiles((previous) => ({ ...previous, [row.key]: file }));
+                                  clearFieldError(row.key);
+                                }}
+                              />
+                              <button
+                                type="button"
+                                className="rounded border border-[#d2dbe8] bg-white px-2 py-1 text-xs text-[#3b79b3] hover:bg-[#f3f7ff]"
+                                onClick={() => fileInputsRef.current[row.key]?.click()}
+                              >
+                                Upload
+                              </button>
+                            </>
+                          ) : null}
+                          {hasSelected ? (
+                            <a
+                              className="rounded border border-[#d2dbe8] bg-white px-2 py-1 text-xs text-[#3b79b3] hover:bg-[#f3f7ff]"
+                              href={URL.createObjectURL(selected!)}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              View
+                            </a>
                           ) : null}
                         </div>
                       </div>
@@ -1164,21 +1492,28 @@ export function AssessorProfileForm() {
             </div>
 
             <div className="flex flex-wrap justify-end gap-2">
+              {showUpdateButton ? (
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => {
+                    setEditMode(true);
+                    setProfileLocked(false);
+                  }}
+                  className="rounded bg-[#2e6b4a] px-4 py-1.5 text-xs text-white hover:bg-[#255a3e] disabled:opacity-60"
+                >
+                  Update
+                </button>
+              ) : null}
               <button
                 type="button"
                 disabled={saving || profileLocked}
                 onClick={() => setShowFinalSubmitConfirm(true)}
-                className="rounded bg-[#2e6b4a] px-4 py-1.5 text-xs text-white hover:bg-[#255a3e] disabled:opacity-60"
+                className={`${profileLocked ? "hidden" : ""} rounded bg-[#2e6b4a] px-4 py-1.5 text-xs text-white hover:bg-[#255a3e] disabled:opacity-60`}
               >
-                {saving && savingKind === "final" ? "Submitting…" : "Final submit"}
-              </button>
-              <button
-                type="button"
-                disabled={saving}
-                onClick={handleCancel}
-                className="rounded border border-[#d5dae3] bg-white px-4 py-1.5 text-xs text-[#667083] disabled:opacity-60"
-              >
-                Cancel
+                {saving && savingKind === "final"
+                  ? "Submitting…"
+                  : "Final submit"}
               </button>
             </div>
           </>
@@ -1214,6 +1549,7 @@ export function AssessorProfileForm() {
           </div>
         </div>
       ) : null}
-    </section>
+      </section>
+    </>
   );
 }

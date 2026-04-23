@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { AuthApiError, forgotAssessorPassword } from "@/lib/auth-api";
 import { isValidEmailFormat } from "@/lib/validation";
@@ -28,14 +29,13 @@ function FieldError({ message }: Readonly<{ message: string }>) {
 }
 
 export default function AssessorForgotPasswordPage() {
+  const router = useRouter();
   const [email, setEmail] = useState("");
   const [emailError, setEmailError] = useState("");
-  const [successMessage, setSuccessMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const submitForgot = async () => {
     setEmailError("");
-    setSuccessMessage("");
 
     const trimmed = email.trim();
     if (!trimmed) {
@@ -50,8 +50,14 @@ export default function AssessorForgotPasswordPage() {
     setIsSubmitting(true);
     try {
       const result = await forgotAssessorPassword({ email: trimmed });
-      setSuccessMessage(result.message);
       setEmail("");
+      if (globalThis.window) {
+        globalThis.window.sessionStorage.setItem(
+          "gc_toast_login",
+          result.message || "Password reset link sent to your email.",
+        );
+      }
+      router.push("/login/assessor");
     } catch (error) {
       if (error instanceof AuthApiError) {
         setEmailError(error.message);
@@ -166,10 +172,6 @@ export default function AssessorForgotPasswordPage() {
                   <FieldError message={emailError} />
                 </div>
               </div>
-
-              {successMessage ? (
-                <p className="rounded-lg bg-[#e8f6ea] px-3 py-2 text-sm text-[#2d6a3e]">{successMessage}</p>
-              ) : null}
 
               <button
                 type="submit"
