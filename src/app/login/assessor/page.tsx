@@ -64,6 +64,7 @@ export default function AssessorLoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [emailError, setEmailError] = useState("");
   const [passwordError, setPasswordError] = useState("");
@@ -117,9 +118,19 @@ export default function AssessorLoginPage() {
       router.push("/assessor/dashboard");
     } catch (error) {
       if (error instanceof AuthApiError) {
-        setEmailError(error.message);
+        const msg = error.message?.trim() || "Something went wrong. Please try again.";
+        // Prioritize password/auth credential errors so they render under Password.
+        if (/password|credential|invalid login|unauthori[sz]ed|auth/i.test(msg)) {
+          setPasswordError(msg);
+          setEmailError("");
+        } else if (/email|account/i.test(msg)) {
+          setEmailError(msg);
+          setPasswordError("");
+        } else {
+          setPasswordError(msg);
+        }
       } else {
-        setEmailError("Something went wrong. Please try again.");
+        setPasswordError("Something went wrong. Please try again.");
       }
     } finally {
       setIsSubmitting(false);
@@ -215,6 +226,7 @@ export default function AssessorLoginPage() {
                       setEmailError("Please enter a valid email format.");
                       return;
                     }
+                    // Clear backend login errors as soon as user edits to a valid email.
                     setEmailError("");
                   }}
                   onBlur={() => {
@@ -250,22 +262,93 @@ export default function AssessorLoginPage() {
                 >
                   Password *
                 </label>
-                <input
-                  id="password"
-                  type="password"
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={(event) => {
-                    setPassword(event.target.value);
-                    if (passwordError) {
-                      setPasswordError("");
-                    }
-                  }}
-                  placeholder="Enter your password"
-                  className="w-full rounded-xl border border-[#dce5df] px-4 py-2.5 text-sm text-[#1e2923] outline-none transition focus:border-[#2f8b55] focus:ring-2 focus:ring-[#c6ebd2]"
-                  aria-invalid={Boolean(passwordError)}
-                  aria-describedby={passwordError ? "password-error" : undefined}
-                />
+                <div className="relative">
+                  <input
+                    id="password"
+                    type={showPassword ? "text" : "password"}
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(event) => {
+                      const next = event.target.value;
+                      setPassword(next);
+
+                      const trimmed = next.trim();
+                      if (!trimmed) {
+                        // Show required only on submit/blur, not while actively typing.
+                        if (passwordError) setPasswordError("");
+                        return;
+                      }
+
+                      // Clear API/password errors immediately once user starts correcting input.
+                      if (passwordError) setPasswordError("");
+                    }}
+                    onBlur={() => {
+                      if (!password.trim()) {
+                        setPasswordError("Password must not be empty.");
+                      }
+                    }}
+                    placeholder="Enter your password"
+                    className={`w-full rounded-xl px-4 py-2.5 pr-12 text-sm text-[#1e2923] outline-none transition ${
+                      passwordError
+                        ? "border border-[#e57373] focus:border-[#c0392b] focus:ring-2 focus:ring-[#f5c6cb]"
+                        : "border border-[#dce5df] focus:border-[#2f8b55] focus:ring-2 focus:ring-[#c6ebd2]"
+                    }`}
+                    aria-invalid={Boolean(passwordError)}
+                    aria-describedby={passwordError ? "password-error" : undefined}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    className="absolute inset-y-0 right-3 my-auto inline-flex h-7 w-7 items-center justify-center rounded text-[#5f6b65] hover:bg-[#f3f7f4]"
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? (
+                      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden>
+                        <path
+                          d="M3 4l17 17"
+                          stroke="currentColor"
+                          strokeWidth="1.7"
+                          strokeLinecap="round"
+                        />
+                        <path
+                          d="M10.6 10.7a2 2 0 0 0 2.7 2.7"
+                          stroke="currentColor"
+                          strokeWidth="1.7"
+                          strokeLinecap="round"
+                        />
+                        <path
+                          d="M9.2 5.5A10.8 10.8 0 0 1 12 5c4.8 0 8.5 2.8 10 7-0.5 1.4-1.2 2.7-2.1 3.8"
+                          stroke="currentColor"
+                          strokeWidth="1.7"
+                          strokeLinecap="round"
+                        />
+                        <path
+                          d="M6.2 8A12.3 12.3 0 0 0 2 12c1.5 4.2 5.2 7 10 7 1.2 0 2.4-0.2 3.4-0.5"
+                          stroke="currentColor"
+                          strokeWidth="1.7"
+                          strokeLinecap="round"
+                        />
+                      </svg>
+                    ) : (
+                      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden>
+                        <path
+                          d="M2 12c1.5-4.2 5.2-7 10-7s8.5 2.8 10 7c-1.5 4.2-5.2 7-10 7s-8.5-2.8-10-7z"
+                          stroke="currentColor"
+                          strokeWidth="1.7"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        <circle
+                          cx="12"
+                          cy="12"
+                          r="3"
+                          stroke="currentColor"
+                          strokeWidth="1.7"
+                        />
+                      </svg>
+                    )}
+                  </button>
+                </div>
                 <div id="password-error">
                   <FieldError message={passwordError} />
                 </div>

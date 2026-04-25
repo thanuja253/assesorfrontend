@@ -12,7 +12,24 @@ export function pickStr(source: Record<string, unknown>, keys: string[]): string
 }
 
 export function pickGstYes(source: Record<string, unknown>): boolean {
-  const keys = ["hasGst", "has_gst", "gst", "isGst", "is_gst", "gstEnabled"];
+  const gstNumberPresent =
+    pickStr(source, ["gstNumber", "gst_number", "gstnumber", "gst_no", "gstNo"]).trim().length > 0;
+  if (gstNumberPresent) {
+    return true;
+  }
+
+  const keys = [
+    "gst_registered",
+    "gstRegistered",
+    "gstRegistration",
+    "gst_registration",
+    "hasGst",
+    "has_gst",
+    "gst",
+    "isGst",
+    "is_gst",
+    "gstEnabled",
+  ];
   for (const key of keys) {
     const value = source[key];
     if (typeof value === "boolean") {
@@ -31,7 +48,31 @@ export function pickGstYes(source: Record<string, unknown>): boolean {
       }
     }
   }
-  return true;
+  // Server payloads without any GST flag should not default to "GST: Yes".
+  return false;
+}
+
+function pickLeadAssessorFlag(source: Record<string, unknown>): string {
+  const keys = ["lead_assessor", "leadAssessor", "is_lead_assessor", "isLeadAssessor", "lead"];
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "boolean") {
+      return value ? "1" : "0";
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value === 1 ? "1" : "0";
+    }
+    if (typeof value === "string") {
+      const lower = value.trim().toLowerCase();
+      if (lower === "1" || lower === "true" || lower === "yes" || lower === "y") {
+        return "1";
+      }
+      if (lower === "0" || lower === "false" || lower === "no" || lower === "n") {
+        return "0";
+      }
+    }
+  }
+  return "";
 }
 
 export type AssessorProfileFormValues = {
@@ -67,6 +108,7 @@ export type AssessorProfileFormValues = {
 export function mapServerProfileToFormValues(
   source: Record<string, unknown>,
 ): AssessorProfileFormValues {
+  const leadAssessor = pickLeadAssessorFlag(source);
   return {
     name: pickStr(source, ["name", "fullName", "full_name"]),
     email: pickStr(source, ["email", "emailAddress", "email_address"]),
@@ -77,7 +119,7 @@ export function mapServerProfileToFormValues(
       "industry",
     ]),
     enrollmentDate: pickStr(source, ["enrollment_date", "enrollmentDate"]),
-    leadAssessor: pickStr(source, ["lead_assessor", "leadAssessor"]),
+    leadAssessor: leadAssessor || pickStr(source, ["lead_assessor", "leadAssessor"]),
     assessorGrade: pickStr(source, ["assessor_grade", "assessorGrade", "grade"]),
     alternateMobile: pickStr(source, [
       "alternateMobile",

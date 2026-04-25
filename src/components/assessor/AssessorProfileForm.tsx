@@ -1,20 +1,24 @@
 "use client";
 
-import { startTransition, useCallback, useEffect, useRef, useState } from "react";
-import { AuthApiError, fetchAssessorGrades, fetchIndustries, fetchStates, type SelectOption } from "@/lib/auth-api";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AuthApiError, fetchAssessorGrades, fetchIndustries, fetchStates, getApiUrl, type SelectOption } from "@/lib/auth-api";
 import {
   type AssessorProfileFileKey,
   buildAssessorProfileFormData,
-  getAssessorAdminProfile,
+  getAssessorMyProfile,
   lookupBankDetailsByIfsc,
   patchAssessorSelfProfile,
 } from "@/lib/assessor-profile-api";
 import { mapServerProfileToFormValues, type AssessorProfileFormValues } from "@/lib/assessor-profile-map";
 import {
   appendProfileSubmitMeta,
+  DOC_STATUS_FORM_KEYS,
   emptyDocCheckStatuses,
   extractDocCheckStatuses,
   extractHasProfileImageFromServer,
+  isDigitsOnly,
+  isIndianMobile,
+  isPincodeDigits,
   type DocStatusFileKey,
   type ProfileFieldErrors,
   validateAssessorProfile,
@@ -103,9 +107,22 @@ function docStatusBadge(status: string | undefined): { label: string; className:
     return { label: "Accepted", className: "bg-[#e8f6ea] text-[#2d6a3e]" };
   }
   if (normalized === "2") {
-    return { label: "Attempted", className: "bg-[#fff7e6] text-[#8a5a00]" };
+    return { label: "Rejected", className: "bg-[#fdeaea] text-[#a94442]" };
   }
   return { label: "Pending", className: "bg-[#eef2ff] text-[#2f3a46]" };
+}
+
+function effectiveDocRowStatus(
+  docKey: DocStatusFileKey,
+  docStatuses: Record<DocStatusFileKey, string>,
+  serverDocNames: Record<DocStatusFileKey, string>,
+): string {
+  const rawStatus = (docStatuses[docKey] ?? "0").trim();
+  const serverName = serverDocNames[docKey]?.trim() ?? "";
+  if (rawStatus !== "0") {
+    return rawStatus;
+  }
+  return serverName ? "3" : "0";
 }
 
 function fileNameOrDash(file: File | null | undefined): string {
@@ -113,6 +130,18 @@ function fileNameOrDash(file: File | null | undefined): string {
     return file.name;
   }
   return "—";
+}
+
+function emptyDocMeta(): Record<DocStatusFileKey, string> {
+  return {
+    biodata: "",
+    cancelled_cheque: "",
+    gst_declaration: "",
+    vendor_registration_form: "",
+    non_disclosure_agreement: "",
+    health_declaration: "",
+    pan_card: "",
+  };
 }
 
 function fileNameFromPath(pathOrUrl: string): string {
@@ -153,6 +182,113 @@ function pickServerDocFileName(payload: Record<string, unknown>, key: string): s
   return "";
 }
 
+function normalizeApprovalState(value: unknown): "approved" | "rejected" | "pending" | "" {
+  if (typeof value === "string") {
+    const lowered = value.trim().toLowerCase();
+    if (lowered === "1" || lowered === "approved" || lowered === "accept" || lowered === "accepted") {
+      return "approved";
+    }
+    if (lowered === "2" || lowered === "rejected" || lowered === "reject") {
+      return "rejected";
+    }
+    if (lowered === "0" || lowered === "pending" || lowered === "uploaded" || lowered === "submitted") {
+      return "pending";
+    }
+  }
+  if (typeof value === "number") {
+    if (value === 1) return "approved";
+    if (value === 2) return "rejected";
+    if (value === 0) return "pending";
+  }
+  return "";
+}
+
+function docStatusesFromDocumentApprovals(
+  payload: Record<string, unknown>,
+): {
+  statuses: Record<DocStatusFileKey, string>;
+  remarks: Record<DocStatusFileKey, string>;
+  names: Record<DocStatusFileKey, string>;
+} | null {
+  const raw =
+    payload.document_approvals ?? payload.documentApprovals ?? payload.doc_approvals ?? payload.docApprovals;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const approvals = raw as Record<string, unknown>;
+  const keys: DocStatusFileKey[] = [
+    "biodata",
+    "vendor_registration_form",
+    "non_disclosure_agreement",
+    "health_declaration",
+    "gst_declaration",
+    "pan_card",
+    "cancelled_cheque",
+  ];
+
+  const statuses = emptyDocCheckStatuses();
+  const remarks = emptyDocMeta();
+  const names = emptyDocMeta();
+
+  for (const key of keys) {
+    const entry = approvals[key];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      continue;
+    }
+    const rec = entry as Record<string, unknown>;
+    const state =
+      normalizeApprovalState(rec.status ?? rec.approval_status ?? rec.approved ?? rec.state ?? rec.document_status);
+    if (state === "approved") statuses[key] = "1";
+    if (state === "rejected") statuses[key] = "2";
+    if (state === "pending") statuses[key] = "3";
+
+    const remarkValue = rec.remarks ?? rec.remark ?? rec.reason ?? rec.comment ?? rec.message;
+    remarks[key] = typeof remarkValue === "string" ? remarkValue.trim() : "";
+
+    const fileValue =
+      rec.file_name ??
+      rec.filename ??
+      rec.name ??
+      rec.file ??
+      rec.file_url ??
+      rec.url ??
+      rec.path ??
+      rec.file_path;
+    if (typeof fileValue === "string" && fileValue.trim()) {
+      names[key] = fileNameFromPath(fileValue);
+    }
+  }
+
+  return { statuses, remarks, names };
+}
+
+function normalizeLegacyDocStatusesForProfileRejection(
+  statusNormalized: "Pending" | "Approved" | "Rejected" | "",
+  fromApprovals: {
+    statuses: Record<DocStatusFileKey, string>;
+    remarks: Record<DocStatusFileKey, string>;
+    names: Record<DocStatusFileKey, string>;
+  } | null,
+  legacyStatuses: Record<DocStatusFileKey, string>,
+): Record<DocStatusFileKey, string> {
+  // If backend sent explicit document_approvals, trust those statuses.
+  if (fromApprovals) {
+    return fromApprovals.statuses;
+  }
+  // If only profile got rejected (without per-document rejection mapping),
+  // do NOT convert all docs to rejected just from legacy doccheck flags.
+  if (statusNormalized !== "Rejected") {
+    return legacyStatuses;
+  }
+  const next = { ...legacyStatuses };
+  (Object.keys(next) as DocStatusFileKey[]).forEach((key) => {
+    if ((next[key] ?? "").trim() === "2") {
+      next[key] = "3";
+    }
+  });
+  return next;
+}
+
 function pickProfileImageUrl(payload: Record<string, unknown>): string {
   const keys = [
     "profile_image_url",
@@ -171,6 +307,16 @@ function pickProfileImageUrl(payload: Record<string, unknown>): string {
     }
   }
   return "";
+}
+
+function resolveServerAssetUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (/^(blob:|data:|https?:\/\/)/i.test(trimmed)) {
+    return trimmed;
+  }
+  const normalized = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return getApiUrl(normalized);
 }
 
 function isProfileLockedFromPayload(payload: Record<string, unknown>): boolean {
@@ -230,7 +376,7 @@ function TextField({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         disabled={disabled}
-        className={`h-8 w-full rounded border bg-white px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${borderClass}`}
+        className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${borderClass}`}
         aria-invalid={error ? true : undefined}
       />
       {error ? <p className="text-xs text-[#c62828]">{error}</p> : null}
@@ -314,10 +460,16 @@ function SearchableSelect({
       ? options
       : options.filter((opt) => opt.label.toLowerCase().includes(normalizedQuery));
 
+  const isRequired =
+    Boolean(required) || (typeof label === "string" ? label.includes("*") : false);
+  const labelNode =
+    typeof label === "string" ? label.replace("*", "").trim() : label;
+
   return (
     <div ref={rootRef} className="space-y-1">
       <label htmlFor={id} className="text-xs font-medium text-[#606a78]">
-        {label} {required ? <span className="text-[#d63f3f]">*</span> : null}
+        {labelNode}
+        {isRequired ? <span className="ml-0.5 font-semibold text-[#d63f3f]">*</span> : null}
       </label>
 
       <button
@@ -329,7 +481,7 @@ function SearchableSelect({
           setOpen((prev) => !prev);
           setQuery("");
         }}
-        className={`flex h-8 w-full items-center justify-between rounded border bg-white px-2 text-left text-xs text-[#2b3340] outline-none focus:ring-1 disabled:opacity-60 ${borderClass}`}
+        className={`flex h-8 w-full items-center justify-between rounded border bg-transparent px-2 text-left text-xs text-[#2b3340] outline-none focus:ring-1 disabled:opacity-60 ${borderClass}`}
         aria-haspopup="listbox"
         aria-expanded={open}
       >
@@ -349,7 +501,7 @@ function SearchableSelect({
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Search..."
-                className="h-8 w-full rounded border border-[#d7dbe4] bg-white px-2 text-xs text-[#2b3340] outline-none focus:ring-1 focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
+                className="h-8 w-full rounded border border-[#d7dbe4] bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
               />
             </div>
             <div role="listbox" className="max-h-48 overflow-auto py-1">
@@ -438,6 +590,7 @@ export function AssessorProfileForm() {
   const [saveSuccess, setSaveSuccess] = useState("");
   const toastTimerRef = useRef<number | null>(null);
   const [saving, setSaving] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [hasExistingProfile, setHasExistingProfile] = useState(false);
   const [assessorId, setAssessorId] = useState<string | null>(null);
   const [form, setForm] = useState<AssessorProfileFormValues>(emptyForm);
@@ -446,17 +599,25 @@ export function AssessorProfileForm() {
   const [hasServerProfileImage, setHasServerProfileImage] = useState(false);
   const [serverProfileImageUrl, setServerProfileImageUrl] = useState("");
   const [profileImagePreviewUrl, setProfileImagePreviewUrl] = useState("");
+  const [profileImageLoadError, setProfileImageLoadError] = useState("");
   const [docStatuses, setDocStatuses] = useState<Record<DocStatusFileKey, string>>(emptyDocCheckStatuses());
   const [serverDocNames, setServerDocNames] = useState<Record<DocStatusFileKey, string>>(
-    emptyDocCheckStatuses() as Record<DocStatusFileKey, string>,
+    emptyDocMeta(),
+  );
+  const [docRemarks, setDocRemarks] = useState<Record<DocStatusFileKey, string>>(
+    emptyDocMeta(),
   );
   const snapshotRef = useRef<AssessorProfileFormValues | null>(null);
+  const isDirtyRef = useRef(false);
   const filesSnapshotRef = useRef<Partial<Record<AssessorProfileFileKey, File | null>>>({});
   const docStatusesSnapshotRef = useRef<Record<DocStatusFileKey, string>>(emptyDocCheckStatuses());
   const hasServerProfileImageSnapshotRef = useRef(false);
   const serverProfileImageUrlSnapshotRef = useRef("");
   const serverDocNamesSnapshotRef = useRef<Record<DocStatusFileKey, string>>(
-    emptyDocCheckStatuses() as Record<DocStatusFileKey, string>,
+    emptyDocMeta(),
+  );
+  const docRemarksSnapshotRef = useRef<Record<DocStatusFileKey, string>>(
+    emptyDocMeta(),
   );
   const [savingKind, setSavingKind] = useState<"draft" | "final" | null>(null);
   const [activeTab, setActiveTab] = useState<ProfileTab>("profile");
@@ -466,6 +627,11 @@ export function AssessorProfileForm() {
   const ifscLookupTimerRef = useRef<number | null>(null);
   const lastIfscLookupRef = useRef<string>("");
   const accountNumberTimerRef = useRef<number | null>(null);
+  const alternateMobileTimerRef = useRef<number | null>(null);
+  const emergencyMobileTimerRef = useRef<number | null>(null);
+  const pancardTimerRef = useRef<number | null>(null);
+  const pincodeTimerRef = useRef<number | null>(null);
+  const emergencyPincodeTimerRef = useRef<number | null>(null);
   const [profileLocked, setProfileLocked] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [assessorGrades, setAssessorGrades] = useState<string[]>([]);
@@ -475,17 +641,18 @@ export function AssessorProfileForm() {
   const [stateOptionsError, setStateOptionsError] = useState("");
   const [industryOptionsError, setIndustryOptionsError] = useState("");
   const [approvalStatus, setApprovalStatus] = useState<"Pending" | "Approved" | "Rejected" | "">("");
-  const [approvalRemarks, setApprovalRemarks] = useState("");
   const fileInputsRef = useRef<Partial<Record<AssessorProfileFileKey, HTMLInputElement | null>>>(
     {},
   );
   const profileImageInputRef = useRef<HTMLInputElement | null>(null);
 
   const setField = useCallback(<K extends keyof AssessorProfileFormValues>(key: K, value: AssessorProfileFormValues[K]) => {
+    isDirtyRef.current = true;
     setForm((previous) => ({ ...previous, [key]: value }));
   }, []);
 
   const applyValues = useCallback((values: AssessorProfileFormValues) => {
+    isDirtyRef.current = false;
     setForm(values);
     snapshotRef.current = values;
     filesSnapshotRef.current = {};
@@ -500,6 +667,48 @@ export function AssessorProfileForm() {
       delete next[key];
       return next;
     });
+  }, []);
+
+  const validateMobileInline = useCallback((valueRaw: string, fieldLabel: string): string => {
+    const value = valueRaw.trim();
+    if (!value) {
+      return "";
+    }
+    if (!isDigitsOnly(value)) {
+      return `${fieldLabel} must contain digits only.`;
+    }
+    if (value.length !== 10) {
+      return `${fieldLabel} must be exactly 10 digits.`;
+    }
+    if (!isIndianMobile(value)) {
+      return `Enter a valid 10-digit ${fieldLabel.toLowerCase()} starting with 6–9.`;
+    }
+    return "";
+  }, []);
+
+  const validatePanInline = useCallback((valueRaw: string): string => {
+    const compact = valueRaw.trim().replaceAll(" ", "").toUpperCase();
+    if (!compact) {
+      return "";
+    }
+    if (compact.length !== 10) {
+      return "PAN must be exactly 10 characters.";
+    }
+    if (!/^[A-Z0-9]+$/.test(compact)) {
+      return "Please Enter a Valid PAN Card No";
+    }
+    return "";
+  }, []);
+
+  const validatePincodeInline = useCallback((valueRaw: string, label: string): string => {
+    const value = valueRaw.trim();
+    if (!value) {
+      return "";
+    }
+    if (!isPincodeDigits(value)) {
+      return `${label} must be exactly 6 digits.`;
+    }
+    return "";
   }, []);
 
   type TextFieldKey = {
@@ -521,120 +730,167 @@ export function AssessorProfileForm() {
   const isRejected = approvalStatus === "Rejected";
   const showUpdateButton = isRejected && !editMode;
 
+  const shouldAutoPollProfile = useMemo(() => {
+    if (loading) {
+      return false;
+    }
+    // Avoid UI flicker while user is editing/typing.
+    // Polling is only needed in read-only submitted states.
+    if (!profileLocked) {
+      return false;
+    }
+    if (approvalStatus === "Pending") {
+      return true;
+    }
+    const docKeys = Object.keys(DOC_STATUS_FORM_KEYS) as DocStatusFileKey[];
+    return docKeys.some((key) => {
+      const s = (docStatuses[key] ?? "0").trim();
+      return s === "2" || s === "3";
+    });
+  }, [approvalStatus, docStatuses, loading, profileLocked]);
+
+  const refreshProfileFromServer = useCallback(async () => {
+    const loginEmail = getLoginEmailFromStorage();
+    const payload = await getAssessorMyProfile();
+
+    const statusValue = payload.approval_status ?? payload.approvalStatus ?? "";
+    const statusRaw =
+      typeof statusValue === "string" ? statusValue.trim() : String(statusValue ?? "").trim();
+    let statusNormalized: "Pending" | "Approved" | "Rejected" | "" = "";
+    const lowered = statusRaw.toLowerCase();
+    if (lowered === "approved") {
+      statusNormalized = "Approved";
+    } else if (lowered === "rejected") {
+      statusNormalized = "Rejected";
+    } else if (lowered === "pending") {
+      statusNormalized = "Pending";
+    }
+
+    const mapped = mapServerProfileToFormValues(payload);
+    if (!mapped.email && loginEmail) {
+      mapped.email = loginEmail;
+    }
+    // Don't clobber user typing during background refreshes.
+    // Only overwrite the form when the profile is in view-only mode.
+    if (!isDirtyRef.current || profileLocked) {
+      applyValues(mapped);
+    }
+
+    const fromApprovals = docStatusesFromDocumentApprovals(payload);
+    const legacyDocStatuses = extractDocCheckStatuses(payload);
+    const doc = normalizeLegacyDocStatusesForProfileRejection(
+      statusNormalized,
+      fromApprovals,
+      legacyDocStatuses,
+    );
+    const hasImg = extractHasProfileImageFromServer(payload);
+    const imgUrl = pickProfileImageUrl(payload);
+    setProfileImageLoadError("");
+    const fallbackDocNames: Record<DocStatusFileKey, string> = {
+      biodata: pickServerDocFileName(payload, "biodata"),
+      cancelled_cheque: pickServerDocFileName(payload, "cancelled_cheque"),
+      gst_declaration: pickServerDocFileName(payload, "gst_declaration"),
+      vendor_registration_form: pickServerDocFileName(payload, "vendor_registration_form"),
+      non_disclosure_agreement: pickServerDocFileName(payload, "non_disclosure_agreement"),
+      health_declaration: pickServerDocFileName(payload, "health_declaration"),
+      pan_card: pickServerDocFileName(payload, "pan_card"),
+    };
+    const docNames: Record<DocStatusFileKey, string> = (() => {
+      if (!fromApprovals?.names) {
+        return fallbackDocNames;
+      }
+      const merged = { ...fallbackDocNames };
+      (Object.keys(fallbackDocNames) as DocStatusFileKey[]).forEach((key) => {
+        const approvalName = fromApprovals.names[key]?.trim() ?? "";
+        if (approvalName) {
+          merged[key] = approvalName;
+        }
+      });
+      return merged;
+    })();
+    const docRmks: Record<DocStatusFileKey, string> = fromApprovals?.remarks ?? emptyDocMeta();
+
+    setDocStatuses(doc);
+    docStatusesSnapshotRef.current = doc;
+    setServerDocNames(docNames);
+    serverDocNamesSnapshotRef.current = docNames;
+    setDocRemarks(docRmks);
+    docRemarksSnapshotRef.current = docRmks;
+    setHasServerProfileImage(hasImg);
+    hasServerProfileImageSnapshotRef.current = hasImg;
+    setServerProfileImageUrl(imgUrl);
+    serverProfileImageUrlSnapshotRef.current = imgUrl;
+    setHasExistingProfile(true);
+
+    const docKeys = Object.keys(DOC_STATUS_FORM_KEYS) as DocStatusFileKey[];
+    const effectiveDocValues = docKeys.map((key) => effectiveDocRowStatus(key, doc, docNames));
+    const hasRejectedDoc = effectiveDocValues.some((value) => String(value).trim() === "2");
+    const allApprovedDocs =
+      effectiveDocValues.length > 0 && effectiveDocValues.every((value) => String(value).trim() === "1");
+    const hasNonApprovedDoc = effectiveDocValues.some((value) => String(value).trim() !== "1");
+
+    let derivedStatus = statusNormalized;
+    if (hasRejectedDoc) {
+      derivedStatus = "Rejected";
+    } else if (hasNonApprovedDoc) {
+      derivedStatus = "Pending";
+    } else if (allApprovedDocs) {
+      derivedStatus = "Approved";
+    }
+
+      setApprovalStatus(derivedStatus);
+
+    const hasAnyUploadedDoc =
+      effectiveDocValues.some((value) => String(value).trim() !== "0") || hasImg || Boolean(imgUrl);
+
+    const locked =
+      derivedStatus === "Approved" ||
+      (derivedStatus === "Pending" && hasAnyUploadedDoc) ||
+      (isProfileLockedFromPayload(payload) && derivedStatus !== "Rejected");
+
+    const baseLocked = derivedStatus === "Rejected" ? true : locked;
+    setProfileLocked(editMode ? false : baseLocked);
+    if (derivedStatus !== "Rejected") {
+      setEditMode(false);
+    }
+  }, [applyValues, editMode]);
+
+  const reloadLatestProfileStatus = useCallback(async () => {
+    setRefreshing(true);
+    setLoadError("");
+    try {
+      await refreshProfileFromServer();
+    } catch (error) {
+      setLoadError(error instanceof AuthApiError ? error.message : "Could not load profile.");
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshProfileFromServer]);
+
   useEffect(() => {
     startTransition(() => {
       const id = getAssessorIdFromStoredUser();
-      if (!id) {
-        setLoadError("Missing assessor account id. Please sign in again.");
-        setLoading(false);
-        return;
+      if (id) {
+        setAssessorId(id);
       }
-      setAssessorId(id);
 
       const loginEmail = getLoginEmailFromStorage();
 
-      getAssessorAdminProfile(id)
-        .then((payload) => {
-          const statusValue = payload.approval_status ?? payload.approvalStatus ?? "";
-          const statusRaw = typeof statusValue === "string" ? statusValue.trim() : String(statusValue ?? "").trim();
-          let statusNormalized: "Pending" | "Approved" | "Rejected" | "" = "";
-          const lowered = statusRaw.toLowerCase();
-          if (lowered === "approved") {
-            statusNormalized = "Approved";
-          } else if (lowered === "rejected") {
-            statusNormalized = "Rejected";
-          } else if (lowered === "pending") {
-            statusNormalized = "Pending";
-          }
-          const mapped = mapServerProfileToFormValues(payload);
-          if (!mapped.email && loginEmail) {
-            mapped.email = loginEmail;
-          }
-          applyValues(mapped);
-          const doc = extractDocCheckStatuses(payload);
-          const hasImg = extractHasProfileImageFromServer(payload);
-          const imgUrl = pickProfileImageUrl(payload);
-          const docNames: Record<DocStatusFileKey, string> = {
-            biodata: pickServerDocFileName(payload, "biodata"),
-            cancelled_cheque: pickServerDocFileName(payload, "cancelled_cheque"),
-            gst_declaration: pickServerDocFileName(payload, "gst_declaration"),
-            vendor_registration_form: pickServerDocFileName(payload, "vendor_registration_form"),
-            non_disclosure_agreement: pickServerDocFileName(payload, "non_disclosure_agreement"),
-            health_declaration: pickServerDocFileName(payload, "health_declaration"),
-            pan_card: pickServerDocFileName(payload, "pan_card"),
-          };
-          setDocStatuses(doc);
-          docStatusesSnapshotRef.current = doc;
-          setServerDocNames(docNames);
-          serverDocNamesSnapshotRef.current = docNames;
-          setHasServerProfileImage(hasImg);
-          hasServerProfileImageSnapshotRef.current = hasImg;
-          setServerProfileImageUrl(imgUrl);
-          serverProfileImageUrlSnapshotRef.current = imgUrl;
-          setHasExistingProfile(true);
-
-          // If assessor updated profile/docs, approval should follow doc statuses:
-          // - any "2" => Rejected (re-upload requested)
-          // - else if any not "1" => Pending
-          // - else Approved
-          const docValues = Object.values(doc);
-          const hasRejectedDoc = docValues.some((value) => String(value).trim() === "2");
-          const allApprovedDocs =
-            docValues.length > 0 && docValues.every((value) => String(value).trim() === "1");
-          const hasNonApprovedDoc = docValues.some((value) => String(value).trim() !== "1");
-
-          let derivedStatus = statusNormalized;
-          if (hasRejectedDoc) {
-            derivedStatus = "Rejected";
-          } else if (hasNonApprovedDoc) {
-            derivedStatus = "Pending";
-          } else if (allApprovedDocs) {
-            derivedStatus = "Approved";
-          }
-
-          setApprovalStatus(derivedStatus);
-          const remarksValue = payload.approval_remarks ?? payload.approvalRemarks ?? payload.remarks ?? "";
-          const remarks =
-            typeof remarksValue === "string" ? remarksValue.trim() : String(remarksValue ?? "").trim();
-          setApprovalRemarks(remarks);
-
-          // Lock behavior:
-          // - Approved => locked
-          // - Pending after submission => locked (some backends don't reliably return `profile_updated`,
-          //   so treat "Pending" + any uploaded doc/image as submitted)
-          // - Rejected => unlocked for profile fields, but only doc status "2" can re-upload
-          const hasAnyUploadedDoc =
-            Object.values(doc).some((value) => String(value).trim() !== "0") ||
-            Object.values(docNames).some((value) => Boolean(value?.trim())) ||
-            hasImg ||
-            Boolean(imgUrl);
-
-          const locked =
-            derivedStatus === "Approved" ||
-            (derivedStatus === "Pending" && hasAnyUploadedDoc) ||
-            (isProfileLockedFromPayload(payload) && derivedStatus !== "Rejected");
-
-          // Rejected flow:
-          // - by default keep locked and show "Update" button
-          // - once user clicks Update, editMode=true and we unlock everything except non-rejected docs upload
-          const baseLocked = derivedStatus === "Rejected" ? true : locked;
-          setProfileLocked(editMode ? false : baseLocked);
-          if (derivedStatus !== "Rejected") {
-            setEditMode(false);
-          }
-        })
+      refreshProfileFromServer()
         .catch((error: unknown) => {
           if (error instanceof AuthApiError && error.status === 404) {
             setProfileLocked(false);
             setApprovalStatus("");
-            setApprovalRemarks("");
             setHasExistingProfile(false);
             const blankDoc = emptyDocCheckStatuses();
             setDocStatuses(blankDoc);
             docStatusesSnapshotRef.current = blankDoc;
-            const blankNames = blankDoc as Record<DocStatusFileKey, string>;
+            const blankNames = emptyDocMeta();
             setServerDocNames(blankNames);
             serverDocNamesSnapshotRef.current = blankNames;
+            const blankRemarks = emptyDocMeta();
+            setDocRemarks(blankRemarks);
+            docRemarksSnapshotRef.current = blankRemarks;
             setHasServerProfileImage(false);
             hasServerProfileImageSnapshotRef.current = false;
             setServerProfileImageUrl("");
@@ -651,7 +907,7 @@ export function AssessorProfileForm() {
           setLoading(false);
         });
     });
-  }, [applyValues, editMode]);
+  }, [applyValues, refreshProfileFromServer]);
 
   useEffect(() => {
     let cancelled = false;
@@ -730,6 +986,7 @@ export function AssessorProfileForm() {
       setHasServerProfileImage(hasServerProfileImageSnapshotRef.current);
       setServerProfileImageUrl(serverProfileImageUrlSnapshotRef.current);
       setServerDocNames({ ...serverDocNamesSnapshotRef.current });
+      setDocRemarks({ ...docRemarksSnapshotRef.current });
     } else {
       const loginEmail = getLoginEmailFromStorage();
       setForm({ ...emptyForm, email: loginEmail });
@@ -741,9 +998,12 @@ export function AssessorProfileForm() {
       hasServerProfileImageSnapshotRef.current = false;
       setServerProfileImageUrl("");
       serverProfileImageUrlSnapshotRef.current = "";
-      const blankNames = blankDoc as Record<DocStatusFileKey, string>;
+      const blankNames = emptyDocMeta();
       setServerDocNames(blankNames);
       serverDocNamesSnapshotRef.current = blankNames;
+      const blankRemarks = emptyDocMeta();
+      setDocRemarks(blankRemarks);
+      docRemarksSnapshotRef.current = blankRemarks;
     }
 
     // After cancel, keep submitted profiles locked (Pending/Approved/Rejected view mode).
@@ -771,6 +1031,46 @@ export function AssessorProfileForm() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [files.profile_image]);
 
+  // Auto-refetch latest admin document approvals while anything is still pending/rejected at doc level,
+  // or while overall approval is pending (even if top-level banner is hidden).
+  useEffect(() => {
+    if (!shouldAutoPollProfile) {
+      return;
+    }
+
+    let cancelled = false;
+    const tryReload = () => {
+      if (cancelled) return;
+      if (saving || refreshing) return;
+      void reloadLatestProfileStatus();
+    };
+
+    tryReload();
+
+    const intervalId = globalThis.window?.setInterval(tryReload, 5000);
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        tryReload();
+      }
+    };
+    const onFocus = () => {
+      tryReload();
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    globalThis.window?.addEventListener("focus", onFocus);
+
+    return () => {
+      cancelled = true;
+      if (intervalId) {
+        globalThis.window?.clearInterval(intervalId);
+      }
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      globalThis.window?.removeEventListener("focus", onFocus);
+    };
+  }, [reloadLatestProfileStatus, refreshing, saving, shouldAutoPollProfile]);
+
   const validateProfileStep = (): ProfileFieldErrors => {
     const errors: ProfileFieldErrors = {};
     const requireText = (key: keyof AssessorProfileFormValues, label: string, value: string) => {
@@ -778,6 +1078,11 @@ export function AssessorProfileForm() {
         errors[key as string] = `${label} is required.`;
       }
     };
+
+    // Profile image required before proceeding to step-2 (bank + documents).
+    if (!profileLocked && !hasServerProfileImage && !files.profile_image) {
+      errors.profile_image = "Profile image is required (JPEG/PNG).";
+    }
 
     // Basic details required on Save & Continue (step 1)
     requireText("name", "Name", form.name);
@@ -804,8 +1109,23 @@ export function AssessorProfileForm() {
     requireText("emergencyState", "Emergency state", form.emergencyState);
     requireText("emergencyPincode", "Emergency pincode", form.emergencyPincode);
 
+    if (form.pincode.trim() && !isPincodeDigits(form.pincode)) {
+      errors.pincode = "Pincode must be exactly 6 digits.";
+    }
+    if (form.emergencyPincode.trim() && !isPincodeDigits(form.emergencyPincode)) {
+      errors.emergencyPincode = "Emergency pincode must be exactly 6 digits.";
+    }
+
     return errors;
   };
+
+  const isProfileStepComplete = useMemo(() => {
+    if (profileLocked) {
+      return true;
+    }
+    const stepErrors = validateProfileStep();
+    return Object.keys(stepErrors).length === 0;
+  }, [profileLocked, validateProfileStep]);
 
   const saveAndContinue = async (): Promise<void> => {
     setSaveError("");
@@ -815,6 +1135,7 @@ export function AssessorProfileForm() {
     const stepErrors = validateProfileStep();
     if (Object.keys(stepErrors).length > 0) {
       setFieldErrors(stepErrors);
+      setActiveTab("profile");
       return;
     }
 
@@ -904,6 +1225,7 @@ export function AssessorProfileForm() {
       setHasExistingProfile(true);
       // Once saved/submitted successfully, don't keep showing old validation states.
       setFieldErrors({});
+      isDirtyRef.current = false;
       const toastMessage = finalSubmit ? "Profile created successfully." : "Profile saved successfully.";
       setSaveSuccess(toastMessage);
       if (toastTimerRef.current !== null) {
@@ -938,17 +1260,13 @@ export function AssessorProfileForm() {
 
   if (loading) {
     return (
-      <section className="rounded border border-[#dfe3ec] bg-white p-8 text-sm text-[#5f6876]">
-        Loading profile…
-      </section>
+      <div className="p-4 text-sm text-[#5f6876]">Loading profile…</div>
     );
   }
 
   if (loadError) {
     return (
-      <section className="rounded border border-[#f5c6cb] bg-[#fff5f5] p-6 text-sm text-[#a94442]">
-        {loadError}
-      </section>
+      <div className="p-4 text-sm text-[#a94442]">{loadError}</div>
     );
   }
 
@@ -964,20 +1282,33 @@ export function AssessorProfileForm() {
           setSaveSuccess("");
         }}
       />
-      <section className="rounded border border-[#dfe3ec] bg-white">
-      <div className="border-b border-[#e2e6ef] px-4 py-3">
-        <p className="text-sm font-semibold text-[#3a4352]">Profile Details</p>
+      <section className="px-4 py-3">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <p className="text-base font-semibold text-[#2f3a46]">Profile</p>
+        {showUpdateButton ? (
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => {
+              setEditMode(true);
+              setProfileLocked(false);
+            }}
+            className="rounded bg-[#2e6b4a] px-4 py-1.5 text-xs text-white hover:bg-[#255a3e] disabled:opacity-60"
+          >
+            Update
+          </button>
+        ) : null}
       </div>
 
-      <div className="space-y-6 p-4">
-        <div className="flex flex-wrap gap-2 border-b border-[#e8edf4] pb-3">
+      <div className="space-y-6">
+        <div className="flex flex-wrap gap-4">
           <button
             type="button"
             onClick={() => setActiveTab("profile")}
-            className={`rounded px-3 py-1.5 text-xs font-semibold ${
+            className={`px-0 py-1 text-sm font-semibold ${
               activeTab === "profile"
-                ? "bg-[var(--gc-primary)] text-white"
-                : "border border-[#d5dae3] bg-white text-[#667083]"
+                ? "text-[var(--gc-primary)] underline underline-offset-4"
+                : "text-[#667083] hover:text-[#2f3a46]"
             }`}
           >
             Profile Details
@@ -985,32 +1316,19 @@ export function AssessorProfileForm() {
           <button
             type="button"
             onClick={() => setActiveTab("bankDocs")}
-            className={`rounded px-3 py-1.5 text-xs font-semibold ${
+            disabled={!isProfileStepComplete}
+            aria-disabled={!isProfileStepComplete ? true : undefined}
+            className={`px-0 py-1 text-sm font-semibold ${
               activeTab === "bankDocs"
-                ? "bg-[var(--gc-primary)] text-white"
-                : "border border-[#d5dae3] bg-white text-[#667083]"
+                ? "text-[var(--gc-primary)] underline underline-offset-4"
+                : !isProfileStepComplete
+                  ? "cursor-not-allowed text-[#a8b0bd]"
+                  : "text-[#667083] hover:text-[#2f3a46]"
             }`}
           >
             Bank Details & Upload Documents
           </button>
         </div>
-
-        {approvalStatus && approvalStatus !== "Pending" ? (
-          <div
-            className={`rounded border px-3 py-2 text-sm ${
-              approvalStatus === "Approved"
-                ? "border-[#c3e6cb] bg-[#e8f6ea] text-[#2d6a3e]"
-                : approvalStatus === "Rejected"
-                  ? "border-[#f5c6cb] bg-[#fdeaea] text-[#a94442]"
-                  : "border-[#ffe6a6] bg-[#fff7e6] text-[#8a5a00]"
-            }`}
-          >
-            <p className="font-semibold">Approval Status: {approvalStatus}</p>
-            {approvalStatus === "Rejected" && approvalRemarks ? (
-              <p className="mt-1 text-sm">Remarks: {approvalRemarks}</p>
-            ) : null}
-          </div>
-        ) : null}
 
         {activeTab === "profile" ? (
           <>
@@ -1018,13 +1336,26 @@ export function AssessorProfileForm() {
               <p className="mb-2 text-xs font-semibold text-[#4f5a68]">Basic Details</p>
               <div className="grid gap-4 md:grid-cols-[220px_1fr]">
                 <div className="space-y-2">
-                  <div className="flex h-32 w-32 items-center justify-center overflow-hidden rounded-full border border-dashed border-[#b7c4d6] bg-[#f7f9fc]">
-                    {profileImagePreviewUrl || serverProfileImageUrl ? (
+                  {(() => {
+                    const serverUrl = resolveServerAssetUrl(serverProfileImageUrl);
+                    const imageSrc = profileImagePreviewUrl || serverUrl;
+                    return (
+                      <div className="flex h-32 w-32 items-center justify-center overflow-hidden rounded-full border border-dashed border-[#b7c4d6] bg-[#f7f9fc]">
+                        {imageSrc ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
-                        src={profileImagePreviewUrl || serverProfileImageUrl}
+                        src={imageSrc}
                         alt="Profile"
                         className="h-full w-full object-cover"
+                        onError={() => {
+                          if (profileImagePreviewUrl) {
+                            setProfileImageLoadError("Could not load selected image preview.");
+                          } else if (serverUrl) {
+                            setProfileImageLoadError(`Could not load profile image from server (${serverUrl}).`);
+                          } else {
+                            setProfileImageLoadError("Could not load profile image.");
+                          }
+                        }}
                       />
                     ) : (
                       <svg className="h-14 w-14 text-[#98a4b3]" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -1037,7 +1368,22 @@ export function AssessorProfileForm() {
                         />
                       </svg>
                     )}
-                  </div>
+                      </div>
+                    );
+                  })()}
+                  {profileImageLoadError ? (
+                    <p className="text-xs text-[#c62828]">{profileImageLoadError}</p>
+                  ) : null}
+                  {serverProfileImageUrl ? (
+                    <a
+                      className="text-xs font-medium text-[#3b79b3] hover:underline"
+                      href={resolveServerAssetUrl(serverProfileImageUrl)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open server image
+                    </a>
+                  ) : null}
                   {!profileLocked ? (
                     <div className="space-y-1">
                       <p className="text-xs font-medium text-[#606a78]">Profile image (PNG / JPEG)</p>
@@ -1065,7 +1411,7 @@ export function AssessorProfileForm() {
                         {profileImagePreviewUrl || serverProfileImageUrl ? (
                           <a
                             className="rounded border border-[#d2dbe8] bg-white px-2 py-1 text-xs text-[#3b79b3] hover:bg-[#f3f7ff]"
-                            href={profileImagePreviewUrl || serverProfileImageUrl}
+                            href={profileImagePreviewUrl || resolveServerAssetUrl(serverProfileImageUrl)}
                             target="_blank"
                             rel="noreferrer"
                           >
@@ -1088,7 +1434,7 @@ export function AssessorProfileForm() {
                   <div className="space-y-1">
                     <SearchableSelect
                       id="industry-category"
-                      label="Industry Category"
+                      label="Industry Category *"
                       required
                       value={form.industryCategory}
                       onChange={(next) => {
@@ -1101,14 +1447,57 @@ export function AssessorProfileForm() {
                       error={fieldErrors.industryCategory || industryOptionsError}
                     />
                   </div>
-                  <TextField label="Alternate Mobile Number" {...bindText("alternateMobile")} />
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-[#606a78]">Alternate Mobile Number</label>
+                    <input
+                      value={form.alternateMobile}
+                      onChange={(event) => {
+                        const next = event.target.value;
+                        setField("alternateMobile", next);
+                        if (alternateMobileTimerRef.current !== null) {
+                          globalThis.window?.clearTimeout(alternateMobileTimerRef.current);
+                          alternateMobileTimerRef.current = null;
+                        }
+                        alternateMobileTimerRef.current =
+                          globalThis.window?.setTimeout(() => {
+                            const msg = validateMobileInline(next, "Alternate mobile");
+                            setFieldErrors((prev) => {
+                              if (!msg) {
+                                if (!prev.alternateMobile) return prev;
+                                const copy = { ...prev };
+                                delete copy.alternateMobile;
+                                return copy;
+                              }
+                              return { ...prev, alternateMobile: msg };
+                            });
+                            alternateMobileTimerRef.current = null;
+                          }, 150) ?? null;
+                      }}
+                      onBlur={() => {
+                        const msg = validateMobileInline(form.alternateMobile, "Alternate mobile");
+                        if (msg) {
+                          setFieldErrors((prev) => ({ ...prev, alternateMobile: msg }));
+                        }
+                      }}
+                      disabled={profileLocked}
+                      className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
+                        fieldErrors.alternateMobile
+                          ? "border-[#c62828] focus:border-[#c62828] focus:ring-[#f8d7da]"
+                          : "border-[#d7dbe4] focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
+                      }`}
+                      aria-invalid={fieldErrors.alternateMobile ? true : undefined}
+                    />
+                    {fieldErrors.alternateMobile ? (
+                      <p className="text-xs text-[#c62828]">{fieldErrors.alternateMobile}</p>
+                    ) : null}
+                  </div>
                   <TextField label="Address Line 1 *" {...bindText("addressLine1")} />
                   <TextField label="Address Line 2" {...bindText("addressLine2")} />
                   <TextField label="City *" {...bindText("city")} />
                   <div className="space-y-1">
                     <SearchableSelect
                       id="state"
-                      label="State"
+                      label="State *"
                       required
                       value={form.state}
                       onChange={(next) => {
@@ -1121,12 +1510,105 @@ export function AssessorProfileForm() {
                       error={fieldErrors.state || stateOptionsError}
                     />
                   </div>
-                  <TextField label="Pincode *" {...bindText("pincode")} />
-                  <TextField label="Pancard Number *" {...bindText("pancardNumber")} />
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-[#606a78]">
+                      Pincode <span className="text-[#d63f3f]">*</span>
+                    </label>
+                    <input
+                      value={form.pincode}
+                      onChange={(event) => {
+                        const next = event.target.value;
+                        setField("pincode", next);
+                        if (pincodeTimerRef.current !== null) {
+                          globalThis.window?.clearTimeout(pincodeTimerRef.current);
+                          pincodeTimerRef.current = null;
+                        }
+                        pincodeTimerRef.current =
+                          globalThis.window?.setTimeout(() => {
+                            const msg = validatePincodeInline(next, "Pincode");
+                            setFieldErrors((prev) => {
+                              if (!msg) {
+                                if (!prev.pincode) return prev;
+                                const copy = { ...prev };
+                                delete copy.pincode;
+                                return copy;
+                              }
+                              return { ...prev, pincode: msg };
+                            });
+                            pincodeTimerRef.current = null;
+                          }, 120) ?? null;
+                      }}
+                      onBlur={() => {
+                        const msg = validatePincodeInline(form.pincode, "Pincode");
+                        if (msg) {
+                          setFieldErrors((prev) => ({ ...prev, pincode: msg }));
+                        }
+                      }}
+                      disabled={profileLocked}
+                      className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
+                        fieldErrors.pincode
+                          ? "border-[#c62828] focus:border-[#c62828] focus:ring-[#f8d7da]"
+                          : "border-[#d7dbe4] focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
+                      }`}
+                      aria-invalid={fieldErrors.pincode ? true : undefined}
+                    />
+                    {fieldErrors.pincode ? (
+                      <p className="text-xs text-[#c62828]">{fieldErrors.pincode}</p>
+                    ) : null}
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-[#606a78]">
+                      Pancard Number <span className="text-[#d63f3f]">*</span>
+                    </label>
+                    <input
+                      value={form.pancardNumber}
+                      onChange={(event) => {
+                        const nextRaw = event.target.value;
+                        setField("pancardNumber", nextRaw);
+                        clearFieldError("pancardNumber");
+                        if (pancardTimerRef.current !== null) {
+                          globalThis.window?.clearTimeout(pancardTimerRef.current);
+                          pancardTimerRef.current = null;
+                        }
+                        pancardTimerRef.current =
+                          globalThis.window?.setTimeout(() => {
+                            const msg = validatePanInline(nextRaw);
+                            setFieldErrors((prev) => {
+                              if (!msg) {
+                                if (!prev.pancardNumber) return prev;
+                                const copy = { ...prev };
+                                delete copy.pancardNumber;
+                                return copy;
+                              }
+                              return { ...prev, pancardNumber: msg };
+                            });
+                            pancardTimerRef.current = null;
+                          }, 150) ?? null;
+                      }}
+                      onBlur={() => {
+                        const normalized = form.pancardNumber.trim().toUpperCase();
+                        setField("pancardNumber", normalized);
+                        const msg = validatePanInline(normalized);
+                        if (msg) {
+                          setFieldErrors((prev) => ({ ...prev, pancardNumber: msg }));
+                        }
+                      }}
+                      disabled={profileLocked}
+                      className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
+                        fieldErrors.pancardNumber
+                          ? "border-[#c62828] focus:border-[#c62828] focus:ring-[#f8d7da]"
+                          : "border-[#d7dbe4] focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
+                      }`}
+                      aria-invalid={fieldErrors.pancardNumber ? true : undefined}
+                    />
+                    {fieldErrors.pancardNumber ? (
+                      <p className="text-xs text-[#c62828]">{fieldErrors.pancardNumber}</p>
+                    ) : null}
+                  </div>
                   <div className="space-y-1">
                     <SearchableSelect
                       id="assessor-grade"
-                      label="Assessor Grade"
+                      label="Assessor Grade *"
                       required
                       value={form.assessorGrade}
                       onChange={(next) => {
@@ -1151,7 +1633,7 @@ export function AssessorProfileForm() {
                         setField("enrollmentDate", event.target.value);
                         clearFieldError("enrollmentDate");
                       }}
-                      className={`h-8 w-full rounded border bg-white px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
+                      className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
                         fieldErrors.enrollmentDate
                           ? "border-[#c62828] focus:border-[#c62828] focus:ring-[#f8d7da]"
                           : "border-[#d7dbe4] focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
@@ -1242,42 +1724,142 @@ export function AssessorProfileForm() {
               <p className="mb-2 text-xs font-semibold text-[#4f5a68]">Emergency Contact Details</p>
               <div className="grid gap-3 md:grid-cols-3">
                 <TextField label="Contact Name *" {...bindText("emergencyContactName")} />
-                <TextField label="Mobile Number *" {...bindText("emergencyMobile")} />
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-[#606a78]">
+                    Mobile Number <span className="text-[#d63f3f]">*</span>
+                  </label>
+                  <input
+                    value={form.emergencyMobile}
+                    onChange={(event) => {
+                      const next = event.target.value;
+                      setField("emergencyMobile", next);
+                      if (emergencyMobileTimerRef.current !== null) {
+                        globalThis.window?.clearTimeout(emergencyMobileTimerRef.current);
+                        emergencyMobileTimerRef.current = null;
+                      }
+                      emergencyMobileTimerRef.current =
+                        globalThis.window?.setTimeout(() => {
+                          const msg = validateMobileInline(next, "Mobile");
+                          setFieldErrors((prev) => {
+                            if (!msg) {
+                              if (!prev.emergencyMobile) return prev;
+                              const copy = { ...prev };
+                              delete copy.emergencyMobile;
+                              return copy;
+                            }
+                            return { ...prev, emergencyMobile: msg };
+                          });
+                          emergencyMobileTimerRef.current = null;
+                        }, 150) ?? null;
+                    }}
+                    onBlur={() => {
+                      const msg = validateMobileInline(form.emergencyMobile, "Mobile");
+                      if (msg) {
+                        setFieldErrors((prev) => ({ ...prev, emergencyMobile: msg }));
+                      }
+                    }}
+                    disabled={profileLocked}
+                    className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
+                      fieldErrors.emergencyMobile
+                        ? "border-[#c62828] focus:border-[#c62828] focus:ring-[#f8d7da]"
+                        : "border-[#d7dbe4] focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
+                    }`}
+                    aria-invalid={fieldErrors.emergencyMobile ? true : undefined}
+                  />
+                  {fieldErrors.emergencyMobile ? (
+                    <p className="text-xs text-[#c62828]">{fieldErrors.emergencyMobile}</p>
+                  ) : null}
+                </div>
                 <TextField label="Address Line 1 *" {...bindText("emergencyAddressLine1")} />
                 <TextField label="Address Line 2" {...bindText("emergencyAddressLine2")} />
                 <TextField label="City *" {...bindText("emergencyCity")} />
-                <TextField label="State *" {...bindText("emergencyState")} />
-                <TextField label="Pincode *" {...bindText("emergencyPincode")} />
+                <div className="space-y-1">
+                  <SearchableSelect
+                    id="emergency-state"
+                    label="State *"
+                    required
+                    value={form.emergencyState}
+                    onChange={(next) => {
+                      setField("emergencyState", next);
+                      clearFieldError("emergencyState");
+                    }}
+                    options={stateOptions.map((opt) => ({ value: opt.label, label: opt.label }))}
+                    placeholder="Select State"
+                    disabled={profileLocked}
+                    error={fieldErrors.emergencyState || stateOptionsError}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-[#606a78]">
+                    Pincode <span className="text-[#d63f3f]">*</span>
+                  </label>
+                  <input
+                    value={form.emergencyPincode}
+                    onChange={(event) => {
+                      const next = event.target.value;
+                      setField("emergencyPincode", next);
+                      if (emergencyPincodeTimerRef.current !== null) {
+                        globalThis.window?.clearTimeout(emergencyPincodeTimerRef.current);
+                        emergencyPincodeTimerRef.current = null;
+                      }
+                      emergencyPincodeTimerRef.current =
+                        globalThis.window?.setTimeout(() => {
+                          const msg = validatePincodeInline(next, "Emergency pincode");
+                          setFieldErrors((prev) => {
+                            if (!msg) {
+                              if (!prev.emergencyPincode) return prev;
+                              const copy = { ...prev };
+                              delete copy.emergencyPincode;
+                              return copy;
+                            }
+                            return { ...prev, emergencyPincode: msg };
+                          });
+                          emergencyPincodeTimerRef.current = null;
+                        }, 120) ?? null;
+                    }}
+                    onBlur={() => {
+                      const msg = validatePincodeInline(form.emergencyPincode, "Emergency pincode");
+                      if (msg) {
+                        setFieldErrors((prev) => ({ ...prev, emergencyPincode: msg }));
+                      }
+                    }}
+                    disabled={profileLocked}
+                    className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
+                      fieldErrors.emergencyPincode
+                        ? "border-[#c62828] focus:border-[#c62828] focus:ring-[#f8d7da]"
+                        : "border-[#d7dbe4] focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
+                    }`}
+                    aria-invalid={fieldErrors.emergencyPincode ? true : undefined}
+                  />
+                  {fieldErrors.emergencyPincode ? (
+                    <p className="text-xs text-[#c62828]">{fieldErrors.emergencyPincode}</p>
+                  ) : null}
+                </div>
               </div>
             </div>
 
             <div className="flex flex-wrap justify-end gap-2">
-              {showUpdateButton ? (
+              {editMode ? (
                 <button
                   type="button"
                   disabled={saving}
-                  onClick={() => {
-                    setEditMode(true);
-                    setProfileLocked(false);
-                  }}
-                  className="rounded bg-[var(--gc-primary)] px-4 py-1.5 text-xs text-white hover:bg-[var(--gc-primary-hover)] disabled:opacity-60"
+                  onClick={handleCancel}
+                  className="rounded border border-[#d5dae3] bg-white px-4 py-1.5 text-xs text-[#667083] hover:bg-[#f7f9fc] disabled:opacity-60"
                 >
-                  Update
+                  Cancel
                 </button>
               ) : null}
               <button
                 type="button"
                 disabled={saving || profileLocked}
                 onClick={() => {
-                  void (editMode ? persistProfile(false) : saveAndContinue());
+                  void saveAndContinue();
                 }}
                 className={`${profileLocked ? "hidden" : ""} rounded bg-[var(--gc-primary)] px-4 py-1.5 text-xs text-white hover:bg-[var(--gc-primary-hover)] disabled:opacity-60`}
               >
                 {saving && savingKind === "draft"
                   ? "Saving…"
-                  : editMode
-                    ? "Save"
-                    : "Save & Continue"}
+                  : "Save & Continue"}
               </button>
             </div>
           </>
@@ -1325,7 +1907,7 @@ export function AssessorProfileForm() {
                       }
                       void runIfscLookup(normalized);
                     }}
-                    className={`h-8 w-full rounded border bg-white px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
+                    className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
                       fieldErrors.ifscCode || ifscLookupError
                         ? "border-[#c62828] focus:border-[#c62828] focus:ring-[#f8d7da]"
                         : "border-[#d7dbe4] focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
@@ -1377,7 +1959,7 @@ export function AssessorProfileForm() {
                       }
                     }}
                     disabled={profileLocked}
-                    className={`h-8 w-full rounded border bg-white px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
+                    className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
                       fieldErrors.accountNumber
                         ? "border-[#c62828] focus:border-[#c62828] focus:ring-[#f8d7da]"
                         : "border-[#d7dbe4] focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
@@ -1395,26 +1977,24 @@ export function AssessorProfileForm() {
               <p className="mb-2 text-xs font-semibold text-[#4f5a68]">
                 Upload Documents [.pdf, .jpg, .png, .jpeg] — max 10MB each (profile image: PNG/JPEG)
               </p>
-              <div className="rounded border border-[#e6eaf2] bg-white">
-                <div className="border-b border-[#eef2f7] bg-[#fbfcff] px-3 py-2 text-xs font-semibold text-[#4f5a68]">
+              <div className="space-y-1">
+                <p className="text-xs font-semibold text-[#4f5a68]">
                   Upload Documents <span className="text-[#d63f3f]">*</span>
-                </div>
-                <div className="divide-y divide-[#eef2f7]">
+                </p>
+                <div className="space-y-2">
                   {DOCUMENT_ROWS.map((row, index) => {
                     const docKey = row.key as DocStatusFileKey;
                     const serverName = serverDocNames[docKey]?.trim() ?? "";
-                    const rawStatus = (docStatuses[docKey] ?? "0").trim();
-                    const effectiveStatus =
-                      rawStatus !== "0" ? rawStatus : serverName ? "3" : "0";
+                    const effectiveStatus = effectiveDocRowStatus(docKey, docStatuses, serverDocNames);
                     const badge = docStatusBadge(effectiveStatus);
                     const selected = files[row.key] ?? null;
                     const hasSelected = Boolean(selected);
                     const hasServer = effectiveStatus !== "0";
-                    const hasFile = hasSelected || hasServer;
+                    const rejectedDocNeedsReupload = docStatuses[docKey] === "2";
                     const canUploadDoc =
                       approvalStatus === "Rejected"
-                        ? !profileLocked && docStatuses[docKey] === "2"
-                        : !profileLocked && (!hasServer || docStatuses[docKey] === "2");
+                        ? editMode && rejectedDocNeedsReupload
+                        : !profileLocked && (!hasServer || rejectedDocNeedsReupload);
                     let fileLabel = "No file selected";
                     if (hasSelected) {
                       fileLabel = fileNameOrDash(selected);
@@ -1425,7 +2005,7 @@ export function AssessorProfileForm() {
                     return (
                       <div
                         key={row.key}
-                        className={`flex flex-col gap-2 px-3 py-3 sm:flex-row sm:items-center sm:justify-between ${
+                        className={`flex flex-col gap-2 py-2 sm:flex-row sm:items-center sm:justify-between ${
                           fieldErrors[row.key] ? "bg-[#fff7f7]" : ""
                         }`}
                       >
@@ -1443,8 +2023,22 @@ export function AssessorProfileForm() {
                           <p className="mt-1 truncate text-xs text-[#5f6876]">
                             {fileLabel}
                           </p>
+                          {docRemarks[docKey]?.trim() ? (
+                            <p
+                              className={`mt-1 text-xs ${
+                                effectiveStatus === "2" ? "text-[#a94442]" : "text-[#5f6876]"
+                              }`}
+                            >
+                              Remarks: {docRemarks[docKey]}
+                            </p>
+                          ) : null}
                           {fieldErrors[row.key] ? (
                             <p className="mt-1 text-xs text-[#c62828]">{fieldErrors[row.key]}</p>
+                          ) : null}
+                          {approvalStatus === "Rejected" && rejectedDocNeedsReupload && !editMode ? (
+                            <p className="mt-1 text-xs text-[#7a8798]">
+                              Click Update to re-upload this rejected document.
+                            </p>
                           ) : null}
                         </div>
 
@@ -1460,8 +2054,11 @@ export function AssessorProfileForm() {
                                 className="hidden"
                                 onChange={(event) => {
                                   const file = event.target.files?.[0] ?? null;
-                                  setFiles((previous) => ({ ...previous, [row.key]: file }));
                                   clearFieldError(row.key);
+                                  if (!file) {
+                                    return;
+                                  }
+                                  setFiles((previous) => ({ ...previous, [row.key]: file }));
                                 }}
                               />
                               <button
@@ -1492,19 +2089,6 @@ export function AssessorProfileForm() {
             </div>
 
             <div className="flex flex-wrap justify-end gap-2">
-              {showUpdateButton ? (
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={() => {
-                    setEditMode(true);
-                    setProfileLocked(false);
-                  }}
-                  className="rounded bg-[#2e6b4a] px-4 py-1.5 text-xs text-white hover:bg-[#255a3e] disabled:opacity-60"
-                >
-                  Update
-                </button>
-              ) : null}
               <button
                 type="button"
                 disabled={saving || profileLocked}

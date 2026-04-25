@@ -97,6 +97,42 @@ export async function getAssessorAdminProfile(assessorId: string): Promise<Recor
 }
 
 /**
+ * GET /api/assessor/profile/me — current assessor’s profile (AssessorJwtAuthGuard).
+ * Use for initial load and after re-upload or admin document approval so `document_approvals`
+ * and file paths match the signed-in assessor.
+ */
+export async function getAssessorMyProfile(): Promise<Record<string, unknown>> {
+  let response: Response;
+  try {
+    response = await fetch(getApiUrl("/api/assessor/profile/me"), {
+      method: "GET",
+      headers: {
+        ...authHeadersJson(),
+        // Ensure status/doc updates show immediately after admin action.
+        "Cache-Control": "no-cache",
+      },
+      cache: "no-store",
+    });
+  } catch {
+    throw new AuthApiError(0, "Network error. Please try again.");
+  }
+
+  const data = await parseJsonSafe(response);
+  if (!response.ok) {
+    throw new AuthApiError(
+      response.status,
+      parseApiErrorMessage(data) ?? "Could not load profile.",
+    );
+  }
+
+  const normalized = normalizeProfilePayload(data);
+  if (!normalized) {
+    throw new AuthApiError(500, "Profile response was empty.");
+  }
+  return normalized;
+}
+
+/**
  * POST /api/admin/assessors/profile — first-time profile (multipart).
  */
 export async function createAssessorAdminProfile(formData: FormData): Promise<unknown> {

@@ -242,9 +242,9 @@ export default function AssessorProjectManagementPage() {
         <td className="px-3 py-2">
           {row.id ?? row.quickview_project_id ? (
             <a
-              href={`/assessor/page-management?quickview_project_id=${encodeURIComponent(
+              href={`/assessor/page-management/${encodeURIComponent(
                 row.id ?? row.quickview_project_id ?? "",
-              )}`}
+              )}/quick-view`}
               className="rounded border border-[#cfe1f4] bg-[#f4f9ff] px-2 py-1 text-xs text-[#3b79b3] hover:bg-[#e8f3ff]"
             >
               Quick View

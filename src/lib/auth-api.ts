@@ -90,14 +90,19 @@ async function loginRequest(path: string, payload: LoginPayload): Promise<LoginS
   }
 
   const data = await response.json().catch(() => null);
+  const serverMessage =
+    data?.message ?? data?.error ?? data?.data?.message ?? data?.data?.error;
 
   if (response.status === 401) {
-    throw new AuthApiError(401, "Invalid credentials");
+    throw new AuthApiError(
+      401,
+      typeof serverMessage === "string" && serverMessage.trim()
+        ? serverMessage
+        : "Invalid credentials",
+    );
   }
 
   if (response.status === 403) {
-    const serverMessage =
-      data?.message ?? data?.error ?? data?.data?.message ?? data?.data?.error;
     throw new AuthApiError(403, getForbiddenMessage(typeof serverMessage === "string" ? serverMessage : undefined));
   }
 
