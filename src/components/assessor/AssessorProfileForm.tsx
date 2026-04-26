@@ -634,6 +634,7 @@ export function AssessorProfileForm() {
   const emergencyPincodeTimerRef = useRef<number | null>(null);
   const [profileLocked, setProfileLocked] = useState(false);
   const [editMode, setEditMode] = useState(false);
+  const [canOpenBankDocsInEditMode, setCanOpenBankDocsInEditMode] = useState(false);
   const [assessorGrades, setAssessorGrades] = useState<string[]>([]);
   const [assessorGradesError, setAssessorGradesError] = useState("");
   const [stateOptions, setStateOptions] = useState<SelectOption[]>([]);
@@ -729,6 +730,7 @@ export function AssessorProfileForm() {
 
   const isRejected = approvalStatus === "Rejected";
   const showUpdateButton = isRejected && !editMode;
+  const showProfileStepActions = !profileLocked && (editMode || !hasExistingProfile);
 
   const shouldAutoPollProfile = useMemo(() => {
     if (loading) {
@@ -977,6 +979,7 @@ export function AssessorProfileForm() {
       toastTimerRef.current = null;
     }
     setEditMode(false);
+    setCanOpenBankDocsInEditMode(false);
     setFieldErrors({});
     setIfscLookupError("");
     if (snapshotRef.current) {
@@ -1126,6 +1129,7 @@ export function AssessorProfileForm() {
     const stepErrors = validateProfileStep();
     return Object.keys(stepErrors).length === 0;
   }, [profileLocked, validateProfileStep]);
+  const canAccessBankDocsTab = isProfileStepComplete && (!editMode || canOpenBankDocsInEditMode);
 
   const saveAndContinue = async (): Promise<void> => {
     setSaveError("");
@@ -1159,6 +1163,7 @@ export function AssessorProfileForm() {
       setSavingKind(null);
       // Even if draft-save fails (backend may still require bank/docs),
       // allow user to proceed to step-2 to complete bank + documents.
+      setCanOpenBankDocsInEditMode(true);
       setActiveTab("bankDocs");
     }
   };
@@ -1292,6 +1297,8 @@ export function AssessorProfileForm() {
             onClick={() => {
               setEditMode(true);
               setProfileLocked(false);
+              setCanOpenBankDocsInEditMode(false);
+              setActiveTab("profile");
             }}
             className="rounded bg-[#2e6b4a] px-4 py-1.5 text-xs text-white hover:bg-[#255a3e] disabled:opacity-60"
           >
@@ -1315,13 +1322,16 @@ export function AssessorProfileForm() {
           </button>
           <button
             type="button"
-            onClick={() => setActiveTab("bankDocs")}
-            disabled={!isProfileStepComplete}
-            aria-disabled={!isProfileStepComplete ? true : undefined}
+            onClick={() => {
+              if (!canAccessBankDocsTab) return;
+              setActiveTab("bankDocs");
+            }}
+            disabled={!canAccessBankDocsTab}
+            aria-disabled={!canAccessBankDocsTab ? true : undefined}
             className={`px-0 py-1 text-sm font-semibold ${
               activeTab === "bankDocs"
                 ? "text-[var(--gc-primary)] underline underline-offset-4"
-                : !isProfileStepComplete
+                : !canAccessBankDocsTab
                   ? "cursor-not-allowed text-[#a8b0bd]"
                   : "text-[#667083] hover:text-[#2f3a46]"
             }`}
@@ -1849,18 +1859,20 @@ export function AssessorProfileForm() {
                   Cancel
                 </button>
               ) : null}
-              <button
-                type="button"
-                disabled={saving || profileLocked}
-                onClick={() => {
-                  void saveAndContinue();
-                }}
-                className={`${profileLocked ? "hidden" : ""} rounded bg-[var(--gc-primary)] px-4 py-1.5 text-xs text-white hover:bg-[var(--gc-primary-hover)] disabled:opacity-60`}
-              >
-                {saving && savingKind === "draft"
-                  ? "Saving…"
-                  : "Save & Continue"}
-              </button>
+              {showProfileStepActions ? (
+                <button
+                  type="button"
+                  disabled={saving || profileLocked}
+                  onClick={() => {
+                    void saveAndContinue();
+                  }}
+                  className={`${profileLocked ? "hidden" : ""} rounded bg-[var(--gc-primary)] px-4 py-1.5 text-xs text-white hover:bg-[var(--gc-primary-hover)] disabled:opacity-60`}
+                >
+                  {saving && savingKind === "draft"
+                    ? "Saving…"
+                    : "Save & Continue"}
+                </button>
+              ) : null}
             </div>
           </>
         ) : (
@@ -1986,9 +1998,11 @@ export function AssessorProfileForm() {
                     const docKey = row.key as DocStatusFileKey;
                     const serverName = serverDocNames[docKey]?.trim() ?? "";
                     const effectiveStatus = effectiveDocRowStatus(docKey, docStatuses, serverDocNames);
-                    const badge = docStatusBadge(effectiveStatus);
                     const selected = files[row.key] ?? null;
                     const hasSelected = Boolean(selected);
+                    const isLocalReuploadForRejected = hasSelected && docStatuses[docKey] === "2";
+                    const statusForDisplay = isLocalReuploadForRejected ? "3" : effectiveStatus;
+                    const badgeForDisplay = docStatusBadge(statusForDisplay);
                     const hasServer = effectiveStatus !== "0";
                     const rejectedDocNeedsReupload = docStatuses[docKey] === "2";
                     const canUploadDoc =
@@ -2014,19 +2028,21 @@ export function AssessorProfileForm() {
                             <p className="text-xs font-medium text-[#2f3a46]">
                               {index + 1}. {row.label} <span className="text-[#d63f3f]">*</span>
                             </p>
-                            {badge ? (
-                              <span className={`inline-flex rounded px-2 py-0.5 text-[11px] font-semibold ${badge.className}`}>
-                                {badge.label}
+                            {badgeForDisplay ? (
+                              <span
+                                className={`inline-flex rounded px-2 py-0.5 text-[11px] font-semibold ${badgeForDisplay.className}`}
+                              >
+                                {badgeForDisplay.label}
                               </span>
                             ) : null}
                           </div>
                           <p className="mt-1 truncate text-xs text-[#5f6876]">
                             {fileLabel}
                           </p>
-                          {docRemarks[docKey]?.trim() ? (
+                          {docRemarks[docKey]?.trim() && !isLocalReuploadForRejected ? (
                             <p
                               className={`mt-1 text-xs ${
-                                effectiveStatus === "2" ? "text-[#a94442]" : "text-[#5f6876]"
+                                statusForDisplay === "2" ? "text-[#a94442]" : "text-[#5f6876]"
                               }`}
                             >
                               Remarks: {docRemarks[docKey]}
@@ -2059,6 +2075,10 @@ export function AssessorProfileForm() {
                                     return;
                                   }
                                   setFiles((previous) => ({ ...previous, [row.key]: file }));
+                                  // Once user re-uploads a rejected doc, reflect it as pending in UI
+                                  // and clear old rejection remark until fresh admin review.
+                                  setDocStatuses((previous) => ({ ...previous, [docKey]: "3" }));
+                                  setDocRemarks((previous) => ({ ...previous, [docKey]: "" }));
                                 }}
                               />
                               <button

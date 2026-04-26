@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useParams } from "next/navigation";
 import { AuthApiError } from "@/lib/auth-api";
-import { getAssessorChecklistDocuments } from "@/lib/assessor-project-api";
+import { getCompanyProjectChecklistDocuments } from "@/lib/assessor-project-api";
+import { textValue } from "../_ui";
 
 type DocRow = {
   id?: string;
@@ -25,10 +27,9 @@ function toList(payload: unknown): DocRow[] {
   return [];
 }
 
-export default function AssessorProjectChecklistDocumentsPage({
-  params,
-}: Readonly<{ params: { projectId: string } }>) {
-  const { projectId } = params;
+export default function AssessorProjectChecklistDocumentsPage() {
+  const routeParams = useParams<{ projectId: string }>();
+  const projectId = typeof routeParams?.projectId === "string" ? routeParams.projectId : "";
   const [criteriaId, setCriteriaId] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -36,92 +37,112 @@ export default function AssessorProjectChecklistDocumentsPage({
 
   useEffect(() => {
     let cancelled = false;
+    if (!projectId || projectId === "undefined") {
+      console.log("projectId", projectId);
+      setError("Invalid project id.");
+      setData({});
+      setLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
     setLoading(true);
     setError("");
-    void getAssessorChecklistDocuments(projectId, criteriaId || undefined)
-      .then((payload) => {
+    const load = async () => {
+      try {
+        const payload = await getCompanyProjectChecklistDocuments(projectId, criteriaId || undefined);
         if (cancelled) return;
         setData(payload);
-      })
-      .catch((e: unknown) => {
+      } catch (e: unknown) {
         if (cancelled) return;
         setError(e instanceof AuthApiError ? e.message : "Could not load checklist documents.");
         setData({});
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setLoading(false);
-      });
+      }
+    };
+    load();
     return () => {
       cancelled = true;
     };
   }, [criteriaId, projectId]);
 
   const rows = useMemo(() => toList(data), [data]);
+  const headerRow = rows[0] ?? {};
+  const criteriaLabel = textValue(criteriaId || headerRow.criteria_short_name || "TH");
 
   if (loading) return <p className="text-sm text-[#667083]">Loading…</p>;
   if (error) return <p className="text-sm text-[#a94442]">{error}</p>;
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold text-[#2f3a46]">View Assessment Submittals</p>
-          <p className="text-xs text-[#667083]">Optional: filter by criteria id.</p>
+      <div className="rounded border border-[#e5eaf3] bg-white">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#edf1f7] px-3 py-2">
+          <div className="flex gap-10 text-xs font-semibold text-[#2d3746]">
+          <p>GROUP : {textValue(data.group ?? data.group_name ?? headerRow.group_name ?? "THANUJA")}</p>
+          <p>SECTOR : {textValue(data.sector ?? data.sector_name ?? headerRow.sector_name ?? "THANUJA 1")}</p>
+          </div>
+          <button type="button" className="rounded bg-[#2f6ea7] px-3 py-1 text-xs font-medium text-white">
+            Download Sample Checklist Document
+          </button>
         </div>
-        <div className="flex items-center gap-2">
-          <label className="text-xs font-medium text-[#606a78]">Criteria Id</label>
-          <input
-            value={criteriaId}
-            onChange={(e) => setCriteriaId(e.target.value)}
-            className="h-8 w-[220px] rounded border border-[#d7dbe4] bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:border-[var(--gc-focus)] focus:ring-1 focus:ring-[var(--gc-focus-ring)]"
-            placeholder="e.g. 1"
-          />
+        <div className="border-b border-[#edf1f7] px-3 py-1.5">
+          <div className="flex h-6 w-full items-center rounded border border-[#dde3ed] bg-[#fafbfd] px-2 text-xs text-[#738197]">
+            <span className="mr-1 text-[#a5afbf]">⊂</span>
+            <input
+              value={criteriaId}
+              onChange={(e) => setCriteriaId(e.target.value)}
+              className="w-[80px] bg-transparent text-xs text-[#2b3340] outline-none"
+              placeholder={criteriaLabel}
+            />
+          </div>
+        </div>
+        <div className="px-3 py-2">
+        {rows.length === 0 ? (
+          <p className="text-xs text-[#667083]">No documents found.</p>
+        ) : (
+          <div className="space-y-3">
+            {rows.map((row, idx) => {
+              const fileUrl = row.document_url ?? row.file_url ?? row.url ?? row.file ?? "";
+              return (
+                <div key={`${row.id ?? idx}`} className="text-xs">
+                  <p className="mb-1 text-[#2f3a46]">
+                    {idx + 1}. {textValue(row.criteria_name ?? row.title ?? row.name)}
+                  </p>
+                  <p className="mb-1 text-[#5f6b7d]">Uploaded File</p>
+                  <div className="flex items-center justify-between gap-2">
+                    <span />
+                    <div className="flex gap-2">
+                      {fileUrl ? (
+                        <>
+                          <a
+                            className="inline-flex h-7 w-7 items-center justify-center rounded border border-[#cfd8e6] text-sm text-[#5b6780]"
+                            href={String(fileUrl)}
+                            target="_blank"
+                            rel="noreferrer"
+                            title="View"
+                          >
+                            👁
+                          </a>
+                          <button
+                            className="inline-flex h-7 w-7 cursor-not-allowed items-center justify-center rounded border border-[#cfd8e6] bg-[#f5f7fb] text-sm font-semibold text-[#8d99ab]"
+                            type="button"
+                            title="Download disabled"
+                            disabled
+                          >
+                            ⬇
+                          </button>
+                        </>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
         </div>
       </div>
-
-      {rows.length === 0 ? (
-        <p className="text-sm text-[#667083]">No documents found.</p>
-      ) : (
-        <div className="overflow-auto rounded border border-[#e6eaf2]">
-          <table className="min-w-[800px] w-full text-left text-xs">
-            <thead className="bg-[#f7f9fc] text-[#4f5a68]">
-              <tr>
-                <th className="px-3 py-2">#</th>
-                <th className="px-3 py-2">Title</th>
-                <th className="px-3 py-2">File</th>
-                <th className="px-3 py-2">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, idx) => {
-                const title = row.title ?? row.name ?? "—";
-                const fileUrl = row.file_url ?? row.url ?? row.file ?? "";
-                return (
-                  <tr key={`${row.id ?? idx}`} className="border-t border-[#eef2f7]">
-                    <td className="px-3 py-2 text-[#667083]">{idx + 1}</td>
-                    <td className="px-3 py-2 text-[#2f3a46]">{title}</td>
-                    <td className="px-3 py-2">
-                      {fileUrl ? (
-                        <a className="text-[#3b79b3] hover:underline" href={String(fileUrl)} target="_blank" rel="noreferrer">
-                          View
-                        </a>
-                      ) : (
-                        <span className="text-[#98a4b5]">—</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-[#2f3a46]">{String(row.status ?? "—")}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      <details className="rounded border border-[#e6eaf2] p-3">
-        <summary className="text-xs font-semibold text-[#445063]">Debug payload</summary>
-        <pre className="mt-2 overflow-auto text-xs text-[#445063]">{JSON.stringify(data, null, 2)}</pre>
-      </details>
     </div>
   );
 }
