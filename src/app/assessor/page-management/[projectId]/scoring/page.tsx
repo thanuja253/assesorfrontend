@@ -216,8 +216,8 @@ export default function AssessorProjectScoringPage() {
         setRows(scoringRows);
         const nextScores: Record<string, string> = {};
         const nextRemarks: Record<string, string> = {};
-        scoringRows.forEach((row) => {
-          const key = String(row.parameter_id ?? row.id ?? "");
+        scoringRows.forEach((row, index) => {
+          const key = getRowKey(row, index);
           if (!key) return;
           const scoreValue =
             (row as Record<string, unknown>).assessor_score ??
@@ -475,6 +475,9 @@ export default function AssessorProjectScoringPage() {
                   <label className="block">
                     <span className="text-[#5c6777]">Final Assessment Score</span>
                     <input
+                      type="number"
+                      min="0"
+                      max={String(row.max_score ?? 10)}
                       value={scoresByParam[rowKey] ?? ""}
                       onChange={(e) => {
                         const value = e.target.value;
@@ -496,6 +499,17 @@ export default function AssessorProjectScoringPage() {
                           return next;
                         });
                         setActionMessage("");
+                      }}
+                      onBlur={() => {
+                        const maxScore = Number(row.max_score ?? 10);
+                        const value = (scoresByParam[rowKey] ?? "").trim();
+                        const numericValue = Number(value);
+                        if (value && !Number.isNaN(numericValue) && numericValue > maxScore) {
+                          setScoreErrorsByParam((prev) => ({
+                            ...prev,
+                            [rowKey]: `Final assessment score cannot exceed maximum score (${maxScore}).`,
+                          }));
+                        }
                       }}
                       className="mt-1 h-9 w-full rounded border border-[#d7dfe9] bg-white px-3 text-base font-medium text-[#1f2937] caret-[#1f2937] outline-none"
                     />
