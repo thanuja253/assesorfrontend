@@ -1,12 +1,14 @@
 "use client";
 
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import {
   AuthApiError,
+  getApiUrl,
   listAssessorProjects,
   type AssessorProjectListFilters,
   type AssessorProjectListItem,
 } from "@/lib/auth-api";
+import { AUTH_TOKEN_KEY } from "@/lib/auth-user";
 
 type FiltersState = Required<AssessorProjectListFilters>;
 type FilterErrors = Partial<Record<"project_id" | "email" | "mobile" | "turnover", string>>;
@@ -32,6 +34,101 @@ const DEFAULT_FILTERS: FiltersState = {
 };
 
 const DEFAULT_PAGE_SIZE = 10;
+type Option = { value: string; label: string };
+const DEFAULT_ACCOUNT_STATUS_OPTIONS: Option[] = [
+  { value: "1", label: "Active" },
+  { value: "0", label: "In Active" },
+];
+
+function asText(value: unknown): string {
+  if (typeof value === "string" || typeof value === "number") return String(value).trim();
+  if (value && typeof value === "object") {
+    const rec = value as Record<string, unknown>;
+    return asText(rec.name ?? rec.label ?? rec.value ?? "");
+  }
+  return "";
+}
+
+function FilterSearchableInput({
+  id,
+  value,
+  onChange,
+  options,
+  placeholder = "All",
+}: Readonly<{
+  id: string;
+  value: string;
+  onChange: (next: string) => void;
+  options: Option[];
+  placeholder?: string;
+}>) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState(value);
+  const [searchTerm, setSearchTerm] = useState("");
+  const filteredOptions = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter((option) => option.label.toLowerCase().includes(q));
+  }, [options, searchTerm]);
+
+  useEffect(() => {
+    setQuery(value);
+  }, [value]);
+
+  return (
+    <div className="relative">
+      <input
+        id={id}
+        value={query}
+        onFocus={() => setOpen(true)}
+        onChange={(e) => {
+          const next = e.target.value;
+          setQuery(next);
+          onChange(next);
+          setOpen(true);
+        }}
+        onClick={() => setOpen(true)}
+        onBlur={() => {
+          globalThis.window?.setTimeout(() => setOpen(false), 120);
+        }}
+        placeholder={placeholder}
+        className="w-full rounded border border-[#d8dfe9] bg-white px-3 py-1.5 text-sm text-[#2f3a46] outline-none placeholder:text-[#99a4b5] focus:border-[#5f9f77] focus:ring-0 focus-visible:ring-0"
+      />
+      <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[#8ba0b0]">▾</span>
+      {open ? (
+        <div className="absolute z-20 mt-1 max-h-44 w-full overflow-auto rounded border border-[#d8dfe9] bg-white shadow">
+          <div className="border-b border-[#e7edf5] p-2">
+            <input
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Search..."
+              className="w-full rounded border border-[#d8dfe9] bg-white px-2 py-1.5 text-xs text-[#2f3a46] outline-none placeholder:text-[#99a4b5] focus:border-[#5f9f77] focus:ring-0 focus-visible:ring-0"
+            />
+          </div>
+          {filteredOptions.length === 0 ? (
+            <p className="px-3 py-2 text-xs text-[#7a8798]">No options found</p>
+          ) : (
+            filteredOptions.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => {
+                  setQuery(option.label);
+                  onChange(option.label);
+                  setSearchTerm("");
+                  setOpen(false);
+                }}
+                className="block w-full px-3 py-2 text-left text-sm text-[#2f3a46] hover:bg-[#f3f8f4]"
+              >
+                {option.label}
+              </button>
+            ))
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function cleanFilters(filters: FiltersState): AssessorProjectListFilters {
   const result: AssessorProjectListFilters = {};
@@ -121,6 +218,11 @@ export default function AssessorProjectManagementPage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+  const [industryOptions, setIndustryOptions] = useState<Option[]>([]);
+  const [entityOptions, setEntityOptions] = useState<Option[]>([]);
+  const [stateOptions, setStateOptions] = useState<Option[]>([]);
+  const [sectorOptions, setSectorOptions] = useState<Option[]>([]);
+  const [accountStatusOptions, setAccountStatusOptions] = useState<Option[]>(DEFAULT_ACCOUNT_STATUS_OPTIONS);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
@@ -165,6 +267,79 @@ export default function AssessorProjectManagementPage() {
       cancelled = true;
     };
   }, [appliedFilters, page, pageSize]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadFilterOptions = async () => {
+      try {
+        const token = globalThis.window?.localStorage.getItem(AUTH_TOKEN_KEY) ?? "";
+        const headers: HeadersInit = {
+          Accept: "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        };
+
+        const candidates = ["/api/company/auth/companies-filters", "/api/companys/auth/companies-filters"];
+        let filtersData: Record<string, unknown> | null = null;
+        for (const path of candidates) {
+          const response = await fetch(getApiUrl(path), { method: "GET", headers, cache: "no-store" });
+          if (!response.ok) {
+            if (response.status === 404) continue;
+            throw new Error("Could not load filter options.");
+          }
+          filtersData = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+          break;
+        }
+        if (!filtersData) {
+          throw new Error("Could not load filter options.");
+        }
+        if (cancelled) return;
+        const filtersPayload =
+          filtersData && typeof filtersData.data === "object" && filtersData.data
+            ? (filtersData.data as Record<string, unknown>)
+            : {};
+
+        const toOptions = (list: unknown[]): Option[] =>
+          list
+            .map((item) => {
+              if (typeof item === "string") return { value: item, label: item };
+              if (!item || typeof item !== "object") return null;
+              const rec = item as Record<string, unknown>;
+              const label = asText(rec.name ?? rec.label ?? rec.value ?? rec.industry ?? rec.entity ?? rec.state ?? "");
+              const value = asText(rec.id ?? rec.code ?? rec.value ?? label);
+              if (!label && !value) return null;
+              return { value: value || label, label: label || value };
+            })
+            .filter((item): item is Option => item !== null);
+
+        setIndustryOptions(toOptions(Array.isArray(filtersPayload.industries) ? filtersPayload.industries : []));
+        setEntityOptions(toOptions(Array.isArray(filtersPayload.entities) ? filtersPayload.entities : []));
+        setStateOptions(toOptions(Array.isArray(filtersPayload.states) ? filtersPayload.states : []));
+        setSectorOptions(toOptions(Array.isArray(filtersPayload.sectors) ? filtersPayload.sectors : []));
+        setAccountStatusOptions(
+          toOptions(Array.isArray(filtersPayload.account_statuses) ? filtersPayload.account_statuses : [])
+            .map((option) => {
+              const normalized = option.label.trim().toLowerCase();
+              if (normalized === "active") return { value: "1", label: option.label };
+              if (normalized === "in active" || normalized === "inactive") return { value: "0", label: option.label };
+              if (option.value === "1" || option.value === "0") return option;
+              return option;
+            }),
+        );
+      } catch {
+        if (!cancelled) {
+          setIndustryOptions([]);
+          setEntityOptions([]);
+          setStateOptions([]);
+          setSectorOptions([]);
+          setAccountStatusOptions(DEFAULT_ACCOUNT_STATUS_OPTIONS);
+        }
+      }
+    };
+    void loadFilterOptions();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const onSearch = () => {
     const nextErrors: FilterErrors = {};
@@ -270,8 +445,11 @@ export default function AssessorProjectManagementPage() {
           <button
             type="button"
             onClick={() => setShowFilters((prev) => !prev)}
-            className="inline-flex items-center gap-1 rounded bg-[#5fa2dc] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#4f93cf]"
+            className="inline-flex items-center gap-1.5 rounded bg-[#2f8f4e] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#267641]"
           >
+            <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" aria-hidden>
+              <path d="M3.5 4.5H16.5L11.5 10.3V15.2L8.5 16.7V10.3L3.5 4.5Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
             <span>Filters</span>
           </button>
         </div>
@@ -290,7 +468,7 @@ export default function AssessorProjectManagementPage() {
                     setDraftFilters((prev) => ({ ...prev, company_id: e.target.value }))
                   }
                   placeholder="Company Id"
-                  className="w-full rounded border border-[#d8dfe9] px-3 py-1.5 text-sm outline-none focus:border-[#6ea3d8]"
+                  className="w-full rounded border border-[#d8dfe9] px-3 py-1.5 text-sm text-[#2f3a46] outline-none placeholder:text-[#99a4b5] focus:border-[#5f9f77] focus:ring-0 focus-visible:ring-0"
                 />
               </div>
               <div className="space-y-1">
@@ -313,10 +491,10 @@ export default function AssessorProjectManagementPage() {
                     }
                   }}
                   placeholder="Project Id"
-                  className={`w-full rounded px-3 py-1.5 text-sm outline-none ${
+                  className={`w-full rounded px-3 py-1.5 text-sm text-[#2f3a46] outline-none placeholder:text-[#99a4b5] focus:ring-0 focus-visible:ring-0 ${
                     filterErrors.project_id
                       ? "border border-[#d63f3f] focus:border-[#d63f3f] focus:ring-1 focus:ring-[#f0b1b1]"
-                      : "border border-[#d8dfe9] focus:border-[#6ea3d8]"
+                      : "border border-[#d8dfe9] focus:border-[#5f9f77]"
                   }`}
                 />
                 {filterErrors.project_id ? (
@@ -332,7 +510,7 @@ export default function AssessorProjectManagementPage() {
                   value={draftFilters.name}
                   onChange={(e) => setDraftFilters((prev) => ({ ...prev, name: e.target.value }))}
                   placeholder="Name"
-                  className="w-full rounded border border-[#d8dfe9] px-3 py-1.5 text-sm outline-none focus:border-[#6ea3d8]"
+                  className="w-full rounded border border-[#d8dfe9] px-3 py-1.5 text-sm text-[#2f3a46] outline-none placeholder:text-[#99a4b5] focus:border-[#5f9f77] focus:ring-0 focus-visible:ring-0"
                 />
               </div>
               <div className="space-y-1">
@@ -355,10 +533,10 @@ export default function AssessorProjectManagementPage() {
                     }
                   }}
                   placeholder="Email Address"
-                  className={`w-full rounded px-3 py-1.5 text-sm outline-none ${
+                  className={`w-full rounded px-3 py-1.5 text-sm text-[#2f3a46] outline-none placeholder:text-[#99a4b5] focus:ring-0 focus-visible:ring-0 ${
                     filterErrors.email
                       ? "border border-[#d63f3f] focus:border-[#d63f3f] focus:ring-1 focus:ring-[#f0b1b1]"
-                      : "border border-[#d8dfe9] focus:border-[#6ea3d8]"
+                      : "border border-[#d8dfe9] focus:border-[#5f9f77]"
                   }`}
                 />
                 {filterErrors.email ? (
@@ -385,10 +563,10 @@ export default function AssessorProjectManagementPage() {
                     }
                   }}
                   placeholder="Phone Number"
-                  className={`w-full rounded px-3 py-1.5 text-sm outline-none ${
+                  className={`w-full rounded px-3 py-1.5 text-sm text-[#2f3a46] outline-none placeholder:text-[#99a4b5] focus:ring-0 focus-visible:ring-0 ${
                     filterErrors.mobile
                       ? "border border-[#d63f3f] focus:border-[#d63f3f] focus:ring-1 focus:ring-[#f0b1b1]"
-                      : "border border-[#d8dfe9] focus:border-[#6ea3d8]"
+                      : "border border-[#d8dfe9] focus:border-[#5f9f77]"
                   }`}
                 />
                 {filterErrors.mobile ? (
@@ -399,54 +577,44 @@ export default function AssessorProjectManagementPage() {
                 <label htmlFor="filter-state" className="text-xs text-[#5f6b7a]">
                   State
                 </label>
-                <input
+                <FilterSearchableInput
                   id="filter-state"
                   value={draftFilters.state}
-                  onChange={(e) => setDraftFilters((prev) => ({ ...prev, state: e.target.value }))}
-                  placeholder="All"
-                  className="w-full rounded border border-[#d8dfe9] px-3 py-1.5 text-sm outline-none focus:border-[#6ea3d8]"
+                  onChange={(next) => setDraftFilters((prev) => ({ ...prev, state: next }))}
+                  options={stateOptions}
                 />
               </div>
               <div className="space-y-1">
                 <label htmlFor="filter-industry" className="text-xs text-[#5f6b7a]">
                   Type of the Industry
                 </label>
-                <input
+                <FilterSearchableInput
                   id="filter-industry"
                   value={draftFilters.industry}
-                  onChange={(e) =>
-                    setDraftFilters((prev) => ({ ...prev, industry: e.target.value }))
-                  }
-                  placeholder="All"
-                  className="w-full rounded border border-[#d8dfe9] px-3 py-1.5 text-sm outline-none focus:border-[#6ea3d8]"
+                  onChange={(next) => setDraftFilters((prev) => ({ ...prev, industry: next }))}
+                  options={industryOptions}
                 />
               </div>
               <div className="space-y-1">
                 <label htmlFor="filter-sector" className="text-xs text-[#5f6b7a]">
                   Type of Sector
                 </label>
-                <input
+                <FilterSearchableInput
                   id="filter-sector"
                   value={draftFilters.sector}
-                  onChange={(e) =>
-                    setDraftFilters((prev) => ({ ...prev, sector: e.target.value }))
-                  }
-                  placeholder="All"
-                  className="w-full rounded border border-[#d8dfe9] px-3 py-1.5 text-sm outline-none focus:border-[#6ea3d8]"
+                  onChange={(next) => setDraftFilters((prev) => ({ ...prev, sector: next }))}
+                  options={sectorOptions}
                 />
               </div>
               <div className="space-y-1">
                 <label htmlFor="filter-entity" className="text-xs text-[#5f6b7a]">
                   Type of the Entity
                 </label>
-                <input
+                <FilterSearchableInput
                   id="filter-entity"
                   value={draftFilters.entity}
-                  onChange={(e) =>
-                    setDraftFilters((prev) => ({ ...prev, entity: e.target.value }))
-                  }
-                  placeholder="All"
-                  className="w-full rounded border border-[#d8dfe9] px-3 py-1.5 text-sm outline-none focus:border-[#6ea3d8]"
+                  onChange={(next) => setDraftFilters((prev) => ({ ...prev, entity: next }))}
+                  options={entityOptions}
                 />
               </div>
               <div className="space-y-1">
@@ -477,10 +645,10 @@ export default function AssessorProjectManagementPage() {
                       }
                     }}
                     placeholder="from value"
-                    className={`w-full rounded px-3 py-1.5 text-sm outline-none ${
+                    className={`w-full rounded px-3 py-1.5 text-sm text-[#2f3a46] outline-none placeholder:text-[#99a4b5] ${
                       filterErrors.turnover
                         ? "border border-[#d63f3f] focus:border-[#d63f3f] focus:ring-1 focus:ring-[#f0b1b1]"
-                        : "border border-[#d8dfe9] focus:border-[#6ea3d8]"
+                        : "border border-[#d8dfe9] focus:border-[#5f9f77]"
                     }`}
                   />
                   <input
@@ -506,10 +674,10 @@ export default function AssessorProjectManagementPage() {
                       }
                     }}
                     placeholder="to value"
-                    className={`w-full rounded px-3 py-1.5 text-sm outline-none ${
+                    className={`w-full rounded px-3 py-1.5 text-sm text-[#2f3a46] outline-none placeholder:text-[#99a4b5] ${
                       filterErrors.turnover
                         ? "border border-[#d63f3f] focus:border-[#d63f3f] focus:ring-1 focus:ring-[#f0b1b1]"
-                        : "border border-[#d8dfe9] focus:border-[#6ea3d8]"
+                        : "border border-[#d8dfe9] focus:border-[#5f9f77]"
                     }`}
                   />
                 </div>
@@ -521,34 +689,39 @@ export default function AssessorProjectManagementPage() {
                 <label htmlFor="filter-account-status" className="text-xs text-[#5f6b7a]">
                   Account Status
                 </label>
-                <select
+                <FilterSearchableInput
                   id="filter-account-status"
                   value={draftFilters.account_status}
-                  onChange={(e) =>
-                    setDraftFilters((prev) => ({ ...prev, account_status: e.target.value }))
-                  }
-                  className="w-full rounded border border-[#d8dfe9] px-3 py-1.5 text-sm outline-none focus:border-[#6ea3d8]"
-                >
-                  <option value="">All</option>
-                  <option value="1">Active</option>
-                  <option value="0">In Active</option>
-                </select>
+                  onChange={(next) => {
+                    const normalized = next.trim().toLowerCase();
+                    if (normalized === "active" || normalized === "1") {
+                      setDraftFilters((prev) => ({ ...prev, account_status: "1" }));
+                    } else if (normalized === "in active" || normalized === "inactive" || normalized === "0") {
+                      setDraftFilters((prev) => ({ ...prev, account_status: "0" }));
+                    } else if (!normalized || normalized === "all") {
+                      setDraftFilters((prev) => ({ ...prev, account_status: "" }));
+                    } else {
+                      setDraftFilters((prev) => ({ ...prev, account_status: next }));
+                    }
+                  }}
+                  options={accountStatusOptions}
+                />
               </div>
             </div>
             <div className="flex justify-end gap-2">
               <button
                 type="button"
                 onClick={onSearch}
-                className="rounded bg-[#5ea2df] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#4f93cf]"
+                className="rounded bg-[#2f8f4e] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#267641]"
               >
                 Search
               </button>
               <button
                 type="button"
                 onClick={onReset}
-                className="rounded border border-[#ced8e6] bg-[#f5f8fd] px-3 py-1.5 text-xs text-[#516173] hover:bg-[#ebf1fa]"
+                className="rounded border border-[#b9d8c3] bg-[#eff9f2] px-3 py-1.5 text-xs text-[#2b6b43] hover:bg-[#e0f3e6]"
               >
-                Reset
+                Cancel
               </button>
             </div>
           </div>

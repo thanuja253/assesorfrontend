@@ -730,7 +730,7 @@ export function AssessorProfileForm() {
 
   const isRejected = approvalStatus === "Rejected";
   const showUpdateButton = isRejected && !editMode;
-  const showProfileStepActions = !profileLocked && (editMode || !hasExistingProfile);
+  const showProfileStepActions = !profileLocked;
 
   const shouldAutoPollProfile = useMemo(() => {
     if (loading) {
@@ -1877,9 +1877,13 @@ export function AssessorProfileForm() {
           </>
         ) : (
           <>
-            <div>
-              <p className="mb-2 text-xs font-semibold text-[#4f5a68]">Bank Details</p>
-              <div className="grid gap-3 md:grid-cols-3">
+            <div className="space-y-4">
+              <div className="rounded-lg border border-[#e4e9f1] bg-[#fbfcff] p-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <p className="text-sm font-semibold text-[#2f3a46]">Bank Details</p>
+                  <p className="text-xs text-[#7a8798]">Fill account information before final submit.</p>
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
                 <div className="space-y-1">
                   <label htmlFor="ifsc-code" className="text-xs font-medium text-[#606a78]">
                     IFSC Code <span className="text-[#d63f3f]">*</span>
@@ -1981,129 +1985,148 @@ export function AssessorProfileForm() {
                   {fieldErrors.accountNumber ? (
                     <p className="text-xs text-[#c62828]">{fieldErrors.accountNumber}</p>
                   ) : null}
+                  </div>
                 </div>
               </div>
-            </div>
+              <div className="rounded-lg border border-[#e4e9f1] bg-white p-4">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold text-[#2f3a46]">
+                      Upload Documents <span className="text-[#d63f3f]">*</span>
+                    </p>
+                    <p className="mt-1 text-xs text-[#6f7b8f]">
+                      Allowed: .pdf, .jpg, .png, .jpeg (max 10MB each). Profile image supports PNG/JPEG.
+                    </p>
+                  </div>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                    {DOCUMENT_ROWS.map((row, index) => {
+                      const docKey = row.key as DocStatusFileKey;
+                      const serverName = serverDocNames[docKey]?.trim() ?? "";
+                      const effectiveStatus = effectiveDocRowStatus(docKey, docStatuses, serverDocNames);
+                      const selected = files[row.key] ?? null;
+                      const hasSelected = Boolean(selected);
+                      const isLocalReuploadForRejected = hasSelected && docStatuses[docKey] === "2";
+                      const statusForDisplay = isLocalReuploadForRejected ? "3" : effectiveStatus;
+                      const badgeForDisplay = docStatusBadge(statusForDisplay);
+                      const hasServer = effectiveStatus !== "0";
+                      const rejectedDocNeedsReupload = docStatuses[docKey] === "2";
+                      const canUploadDoc =
+                        approvalStatus === "Rejected"
+                          ? editMode && rejectedDocNeedsReupload
+                          : !profileLocked && (!hasServer || rejectedDocNeedsReupload);
+                      let fileLabel = "No file selected";
+                      if (hasSelected) {
+                        fileLabel = fileNameOrDash(selected);
+                      } else if (hasServer) {
+                        fileLabel = serverName || "Uploaded File";
+                      }
 
-            <div>
-              <p className="mb-2 text-xs font-semibold text-[#4f5a68]">
-                Upload Documents [.pdf, .jpg, .png, .jpeg] — max 10MB each (profile image: PNG/JPEG)
-              </p>
-              <div className="space-y-1">
-                <p className="text-xs font-semibold text-[#4f5a68]">
-                  Upload Documents <span className="text-[#d63f3f]">*</span>
-                </p>
-                <div className="space-y-2">
-                  {DOCUMENT_ROWS.map((row, index) => {
-                    const docKey = row.key as DocStatusFileKey;
-                    const serverName = serverDocNames[docKey]?.trim() ?? "";
-                    const effectiveStatus = effectiveDocRowStatus(docKey, docStatuses, serverDocNames);
-                    const selected = files[row.key] ?? null;
-                    const hasSelected = Boolean(selected);
-                    const isLocalReuploadForRejected = hasSelected && docStatuses[docKey] === "2";
-                    const statusForDisplay = isLocalReuploadForRejected ? "3" : effectiveStatus;
-                    const badgeForDisplay = docStatusBadge(statusForDisplay);
-                    const hasServer = effectiveStatus !== "0";
-                    const rejectedDocNeedsReupload = docStatuses[docKey] === "2";
-                    const canUploadDoc =
-                      approvalStatus === "Rejected"
-                        ? editMode && rejectedDocNeedsReupload
-                        : !profileLocked && (!hasServer || rejectedDocNeedsReupload);
-                    let fileLabel = "No file selected";
-                    if (hasSelected) {
-                      fileLabel = fileNameOrDash(selected);
-                    } else if (hasServer) {
-                      fileLabel = serverName || "Uploaded File";
-                    }
-
-                    return (
-                      <div
-                        key={row.key}
-                        className={`flex flex-col gap-2 py-2 sm:flex-row sm:items-center sm:justify-between ${
-                          fieldErrors[row.key] ? "bg-[#fff7f7]" : ""
-                        }`}
-                      >
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <p className="text-xs font-medium text-[#2f3a46]">
-                              {index + 1}. {row.label} <span className="text-[#d63f3f]">*</span>
+                      return (
+                        <div
+                          key={row.key}
+                          className={`rounded-md border px-3 py-3 ${
+                            fieldErrors[row.key] ? "border-[#f0caca] bg-[#fff8f8]" : "border-[#e7ecf3] bg-white"
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-xs font-medium text-[#2f3a46]">
+                                {index + 1}. {row.label} <span className="text-[#d63f3f]">*</span>
+                              </p>
+                              {badgeForDisplay ? (
+                                <span
+                                  className={`inline-flex rounded px-2 py-0.5 text-[11px] font-semibold ${badgeForDisplay.className}`}
+                                >
+                                  {badgeForDisplay.label}
+                                </span>
+                              ) : null}
+                            </div>
+                            <p className="mt-1 truncate text-xs text-[#5f6876]">
+                              {fileLabel}
                             </p>
-                            {badgeForDisplay ? (
-                              <span
-                                className={`inline-flex rounded px-2 py-0.5 text-[11px] font-semibold ${badgeForDisplay.className}`}
+                            {docRemarks[docKey]?.trim() && !isLocalReuploadForRejected ? (
+                              <p
+                                className={`mt-1 text-xs ${
+                                  statusForDisplay === "2" ? "text-[#a94442]" : "text-[#5f6876]"
+                                }`}
                               >
-                                {badgeForDisplay.label}
-                              </span>
+                                Remarks: {docRemarks[docKey]}
+                              </p>
+                            ) : null}
+                            {fieldErrors[row.key] ? (
+                              <p className="mt-1 text-xs text-[#c62828]">{fieldErrors[row.key]}</p>
+                            ) : null}
+                            {approvalStatus === "Rejected" && rejectedDocNeedsReupload && !editMode ? (
+                              <p className="mt-1 text-xs text-[#7a8798]">
+                                Click Update to re-upload this rejected document.
+                              </p>
                             ) : null}
                           </div>
-                          <p className="mt-1 truncate text-xs text-[#5f6876]">
-                            {fileLabel}
-                          </p>
-                          {docRemarks[docKey]?.trim() && !isLocalReuploadForRejected ? (
-                            <p
-                              className={`mt-1 text-xs ${
-                                statusForDisplay === "2" ? "text-[#a94442]" : "text-[#5f6876]"
-                              }`}
-                            >
-                              Remarks: {docRemarks[docKey]}
-                            </p>
-                          ) : null}
-                          {fieldErrors[row.key] ? (
-                            <p className="mt-1 text-xs text-[#c62828]">{fieldErrors[row.key]}</p>
-                          ) : null}
-                          {approvalStatus === "Rejected" && rejectedDocNeedsReupload && !editMode ? (
-                            <p className="mt-1 text-xs text-[#7a8798]">
-                              Click Update to re-upload this rejected document.
-                            </p>
-                          ) : null}
-                        </div>
 
-                        <div className="flex flex-shrink-0 items-center justify-end gap-2">
-                          {canUploadDoc ? (
-                            <>
-                              <input
-                                ref={(node) => {
-                                  fileInputsRef.current[row.key] = node;
-                                }}
-                                type="file"
-                                accept="application/pdf,image/jpg,image/jpeg,image/png"
-                                className="hidden"
-                                onChange={(event) => {
-                                  const file = event.target.files?.[0] ?? null;
-                                  clearFieldError(row.key);
-                                  if (!file) {
-                                    return;
-                                  }
-                                  setFiles((previous) => ({ ...previous, [row.key]: file }));
-                                  // Once user re-uploads a rejected doc, reflect it as pending in UI
-                                  // and clear old rejection remark until fresh admin review.
-                                  setDocStatuses((previous) => ({ ...previous, [docKey]: "3" }));
-                                  setDocRemarks((previous) => ({ ...previous, [docKey]: "" }));
-                                }}
-                              />
-                              <button
-                                type="button"
-                                className="rounded border border-[#d2dbe8] bg-white px-2 py-1 text-xs text-[#3b79b3] hover:bg-[#f3f7ff]"
-                                onClick={() => fileInputsRef.current[row.key]?.click()}
+                          <div className="mt-3 flex flex-shrink-0 items-center justify-start gap-2">
+                            {canUploadDoc ? (
+                              <>
+                                <input
+                                  ref={(node) => {
+                                    fileInputsRef.current[row.key] = node;
+                                  }}
+                                  type="file"
+                                  accept="application/pdf,image/jpg,image/jpeg,image/png"
+                                  className="hidden"
+                                  onChange={(event) => {
+                                    const file = event.target.files?.[0] ?? null;
+                                    clearFieldError(row.key);
+                                    if (!file) {
+                                      return;
+                                    }
+                                    setFiles((previous) => ({ ...previous, [row.key]: file }));
+                                    // Once user re-uploads a rejected doc, reflect it as pending in UI
+                                    // and clear old rejection remark until fresh admin review.
+                                    setDocStatuses((previous) => ({ ...previous, [docKey]: "3" }));
+                                    setDocRemarks((previous) => ({ ...previous, [docKey]: "" }));
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  className="rounded border border-[#cdd8e8] bg-white px-3 py-1 text-xs font-medium text-[#2f6ea5] hover:bg-[#f1f6ff]"
+                                  onClick={() => fileInputsRef.current[row.key]?.click()}
+                                >
+                                  Upload
+                                </button>
+                              </>
+                            ) : null}
+                            {hasSelected ? (
+                              <a
+                              className="inline-flex h-7 w-7 items-center justify-center rounded border border-[#cdd8e8] bg-white text-[#2f6ea5] hover:bg-[#f1f6ff]"
+                                href={URL.createObjectURL(selected!)}
+                                target="_blank"
+                                rel="noreferrer"
+                              aria-label={`View ${row.label}`}
+                              title="View"
                               >
-                                Upload
-                              </button>
-                            </>
-                          ) : null}
-                          {hasSelected ? (
-                            <a
-                              className="rounded border border-[#d2dbe8] bg-white px-2 py-1 text-xs text-[#3b79b3] hover:bg-[#f3f7ff]"
-                              href={URL.createObjectURL(selected!)}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              View
-                            </a>
-                          ) : null}
+                              <svg
+                                viewBox="0 0 20 20"
+                                fill="none"
+                                xmlns="http://www.w3.org/2000/svg"
+                                className="h-4 w-4"
+                                aria-hidden
+                              >
+                                <path
+                                  d="M1.8 10C3.9 6.6 6.6 4.9 10 4.9C13.4 4.9 16.1 6.6 18.2 10C16.1 13.4 13.4 15.1 10 15.1C6.6 15.1 3.9 13.4 1.8 10Z"
+                                  stroke="currentColor"
+                                  strokeWidth="1.5"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                                <circle cx="10" cy="10" r="2.2" fill="currentColor" />
+                              </svg>
+                              </a>
+                            ) : null}
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
                 </div>
               </div>
             </div>

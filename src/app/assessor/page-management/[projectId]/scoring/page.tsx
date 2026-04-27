@@ -5,11 +5,11 @@ import { useParams } from "next/navigation";
 import { AuthApiError } from "@/lib/auth-api";
 import {
   downloadAssessorFinalScoring,
+  downloadAssessorSampleChecklistDocument,
   finalSubmitAssessorScore,
   getAdminAssessmentScoring,
   getCompanyAssessmentCriteriaBySector,
   getCompanyProjectQuickView,
-  saveAssessorScore,
 } from "@/lib/assessor-project-api";
 import { SectionCard } from "../_ui";
 
@@ -79,6 +79,10 @@ function toRows(payload: unknown): ScoringRow[] {
   return [];
 }
 
+function getRowKey(row: ScoringRow, index: number): string {
+  return String(row.parameter_id ?? row.id ?? `row-${index}`);
+}
+
 export default function AssessorProjectScoringPage() {
   const routeParams = useParams<{ projectId: string }>();
   const projectId = typeof routeParams?.projectId === "string" ? routeParams.projectId : "";
@@ -91,8 +95,12 @@ export default function AssessorProjectScoringPage() {
   const [rows, setRows] = useState<ScoringRow[]>([]);
   const [scoresByParam, setScoresByParam] = useState<Record<string, string>>({});
   const [remarksByParam, setRemarksByParam] = useState<Record<string, string>>({});
+  const [scoreErrorsByParam, setScoreErrorsByParam] = useState<Record<string, string>>({});
+  const [remarkErrorsByParam, setRemarkErrorsByParam] = useState<Record<string, string>>({});
   const [actionMessage, setActionMessage] = useState("");
   const [saving, setSaving] = useState(false);
+  const [showFinalSubmitConfirm, setShowFinalSubmitConfirm] = useState(false);
+  const [isFinalSubmittedForCurrentCriteria, setIsFinalSubmittedForCurrentCriteria] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -226,6 +234,23 @@ export default function AssessorProjectScoringPage() {
         });
         setScoresByParam(nextScores);
         setRemarksByParam(nextRemarks);
+        setScoreErrorsByParam({});
+        setRemarkErrorsByParam({});
+        const allSubmitted =
+          scoringRows.length > 0 &&
+          scoringRows.every((row) => {
+            const rec = row as Record<string, unknown>;
+            const submitted =
+              rec.assessor_final_submitted ??
+              rec.final_submitted ??
+              rec.is_final_submitted ??
+              rec.assessor_approval;
+            if (submitted === true) return true;
+            if (typeof submitted === "number") return submitted === 1;
+            if (typeof submitted === "string") return submitted.trim() === "1" || submitted.trim().toLowerCase() === "true";
+            return false;
+          });
+        setIsFinalSubmittedForCurrentCriteria(allSubmitted);
         setError("");
       } catch (e: unknown) {
         if (cancelled) return;
@@ -246,27 +271,63 @@ export default function AssessorProjectScoringPage() {
 
   const totalMax = rows.reduce((sum, row) => sum + Number(row.max_score ?? 10), 0);
   const totalPre = rows.reduce((sum, row) => sum + resolvePreScore(row), 0);
-  const totalFinal = rows.reduce((sum, row) => {
-    const key = String(row.parameter_id ?? row.id ?? "");
+  const totalFinal = rows.reduce((sum, row, index) => {
+    const key = getRowKey(row, index);
     return sum + Number(scoresByParam[key] ?? 0);
   }, 0);
 
-  const submitScore = async (isFinalSubmit: boolean) => {
+  const validateInlineBeforeSubmit = (): boolean => {
     if (!selectedCriteriaId || rows.length === 0) {
       setActionMessage("No scoring rows available for this criteria.");
+      return false;
+    }
+    if (!selectedCriteriaId || rows.length === 0) {
+      setActionMessage("No scoring rows available for this criteria.");
+      return false;
+    }
+    const nextScoreErrors: Record<string, string> = {};
+    const nextRemarkErrors: Record<string, string> = {};
+    rows.forEach((row, index) => {
+      const rowKey = getRowKey(row, index);
+      const scoreText = (scoresByParam[rowKey] ?? "").trim();
+      const scoreValue = Number(scoreText);
+      const maxScore = Number(row.max_score ?? 10);
+      const remarksText = (remarksByParam[rowKey] ?? "").trim();
+      if (!scoreText || Number.isNaN(scoreValue)) {
+        nextScoreErrors[rowKey] = "Final assessment score is required.";
+      } else if (scoreValue > maxScore) {
+        nextScoreErrors[rowKey] = `Final assessment score cannot exceed maximum score (${maxScore}).`;
+      }
+      if (!remarksText) {
+        nextRemarkErrors[rowKey] = "Assessor remarks are required.";
+      }
+    });
+    setScoreErrorsByParam(nextScoreErrors);
+    setRemarkErrorsByParam(nextRemarkErrors);
+    if (Object.keys(nextScoreErrors).length > 0 || Object.keys(nextRemarkErrors).length > 0) {
+      setActionMessage("Please fill required final score and remarks.");
+      return false;
+    }
+    return true;
+  };
+
+  const submitScore = async () => {
+    if (!validateInlineBeforeSubmit()) {
       return;
     }
+
     const payloadRows = rows
-      .map((row) => {
+      .map((row, index) => {
         const parameterId = String(row.parameter_id ?? row.id ?? "");
+        const rowKey = getRowKey(row, index);
         if (!parameterId) return null;
-        const numericScore = Number(scoresByParam[parameterId] ?? "");
+        const numericScore = Number(scoresByParam[rowKey] ?? "");
         if (Number.isNaN(numericScore)) return null;
         return {
           parameter_id: parameterId,
           assessor_score: numericScore,
-          assessor_remarks: remarksByParam[parameterId] ?? "",
-          remarks: remarksByParam[parameterId] ?? "",
+          assessor_remarks: remarksByParam[rowKey] ?? "",
+          remarks: remarksByParam[rowKey] ?? "",
         };
       })
       .filter((row): row is { parameter_id: string; assessor_score: number; assessor_remarks: string; remarks: string } => row !== null);
@@ -275,12 +336,6 @@ export default function AssessorProjectScoringPage() {
       setActionMessage("Enter valid assessor score(s) before submit.");
       return;
     }
-    const missingRemarks = payloadRows.some((row) => !row.assessor_remarks.trim());
-    if (missingRemarks) {
-      setActionMessage("Assessor remarks are mandatory for all scored rows.");
-      return;
-    }
-
     setSaving(true);
     setActionMessage("");
     try {
@@ -288,14 +343,10 @@ export default function AssessorProjectScoringPage() {
         criteria_id: selectedCriteriaId,
         rows: payloadRows,
       };
-      if (isFinalSubmit) {
-        await finalSubmitAssessorScore(projectId, payload);
-        await getCompanyProjectQuickView(projectId);
-        setActionMessage("Final submit completed successfully.");
-      } else {
-        await saveAssessorScore(projectId, payload);
-        setActionMessage("Score saved successfully.");
-      }
+      await finalSubmitAssessorScore(projectId, payload);
+      await getCompanyProjectQuickView(projectId);
+      setIsFinalSubmittedForCurrentCriteria(true);
+      setActionMessage("Final submit completed successfully.");
     } catch (e: unknown) {
       setActionMessage(e instanceof AuthApiError ? e.message : "Could not submit assessor score.");
     } finally {
@@ -321,14 +372,22 @@ export default function AssessorProjectScoringPage() {
     }
   };
 
-  const handleDownloadSampleChecklist = () => {
+  const handleDownloadSampleChecklist = async () => {
     setActionMessage("");
-    const selectedCriteria = criteriaList.find((item) => item.id === selectedCriteriaId);
-    if (selectedCriteria?.sampleUrl) {
-      window.open(selectedCriteria.sampleUrl, "_blank", "noopener,noreferrer");
-      return;
+    try {
+      const { blob, filename } = await downloadAssessorSampleChecklistDocument(projectId, sector || undefined);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename || `sample-checklist-${projectId}.pdf`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setActionMessage("Sample checklist downloaded successfully.");
+    } catch (e: unknown) {
+      setActionMessage(e instanceof AuthApiError ? e.message : "Sample checklist document is unavailable for selected criteria.");
     }
-    setActionMessage("Sample checklist document is unavailable for selected criteria.");
   };
 
   return (
@@ -348,7 +407,7 @@ export default function AssessorProjectScoringPage() {
           </button>
           <button
             type="button"
-            onClick={handleDownloadSampleChecklist}
+            onClick={() => void handleDownloadSampleChecklist()}
             className="rounded bg-[#2f8f4e] px-4 py-2 text-sm font-medium text-white"
           >
             Download Sample Checklist Document
@@ -379,8 +438,8 @@ export default function AssessorProjectScoringPage() {
           <p className="text-sm text-[#7f8a9a]">No score rows found.</p>
         ) : (
           <div className="space-y-4">
-            {rows.map((row) => {
-              const rowKey = String(row.parameter_id ?? row.id ?? "");
+            {rows.map((row, rowIndex) => {
+              const rowKey = getRowKey(row, rowIndex);
               const rowPreScore = resolvePreScore(row);
               let preScoreToShow = rowPreScore;
               if (rowPreScore <= 0 && rows.length === 1 && totalPre > 0) {
@@ -417,11 +476,32 @@ export default function AssessorProjectScoringPage() {
                     <span className="text-[#5c6777]">Final Assessment Score</span>
                     <input
                       value={scoresByParam[rowKey] ?? ""}
-                      onChange={(e) =>
-                        setScoresByParam((prev) => ({ ...prev, [rowKey]: e.target.value }))
-                      }
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        const maxScore = Number(row.max_score ?? 10);
+                        setScoresByParam((prev) => ({ ...prev, [rowKey]: value }));
+                        setScoreErrorsByParam((prev) => {
+                          const next = { ...prev };
+                          const cleaned = value.trim();
+                          const numericValue = Number(cleaned);
+                          if (!cleaned) {
+                            next[rowKey] = "";
+                          } else if (!/^\d+(\.\d+)?$/.test(cleaned) || Number.isNaN(numericValue)) {
+                            next[rowKey] = "Enter a valid numeric score.";
+                          } else if (numericValue > maxScore) {
+                            next[rowKey] = `Final assessment score cannot exceed maximum score (${maxScore}).`;
+                          } else {
+                            next[rowKey] = "";
+                          }
+                          return next;
+                        });
+                        setActionMessage("");
+                      }}
                       className="mt-1 h-9 w-full rounded border border-[#d7dfe9] bg-white px-3 text-base font-medium text-[#1f2937] caret-[#1f2937] outline-none"
                     />
+                    {scoreErrorsByParam[rowKey] ? (
+                      <p className="mt-1 text-xs text-[#a94442]">{scoreErrorsByParam[rowKey]}</p>
+                    ) : null}
                   </label>
                   <p className="text-[#5c6777]">Maximum Score : {String(row.max_score ?? 10)}</p>
                 </div>
@@ -432,10 +512,15 @@ export default function AssessorProjectScoringPage() {
                   <textarea
                     className="h-[96px] w-full rounded border border-[#d7dfe9] bg-white px-3 py-2 text-base font-medium text-[#1f2937] caret-[#1f2937] outline-none"
                     value={remarksByParam[rowKey] ?? ""}
-                    onChange={(e) =>
-                      setRemarksByParam((prev) => ({ ...prev, [rowKey]: e.target.value }))
-                    }
+                    onChange={(e) => {
+                      setRemarksByParam((prev) => ({ ...prev, [rowKey]: e.target.value }));
+                      setRemarkErrorsByParam((prev) => ({ ...prev, [rowKey]: "" }));
+                      setActionMessage("");
+                    }}
                   />
+                  {remarkErrorsByParam[rowKey] ? (
+                    <p className="mt-1 text-xs text-[#a94442]">{remarkErrorsByParam[rowKey]}</p>
+                  ) : null}
                   <p className="mt-2 text-[#5c6777]">
                     Co-ordinator Remarks : {String(row.coordinator_remarks ?? "—")}
                   </p>
@@ -462,25 +547,53 @@ export default function AssessorProjectScoringPage() {
         </p>
       ) : null}
 
-      <div className="flex justify-center gap-3">
-        <button
-          type="button"
-          onClick={() => void submitScore(false)}
-          disabled={saving}
-          className="rounded bg-[#2f8f4e] px-6 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {saving ? "Saving..." : "Save"}
-        </button>
-        <button
-          type="button"
-          onClick={() => void submitScore(true)}
-          disabled={saving}
-          className="rounded bg-[#2f8f4e] px-6 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {saving ? "Submitting..." : "Final Submit"}
-        </button>
-        <button type="button" className="rounded border border-[#d7dfe9] bg-white px-5 py-2 text-sm text-[#5c6777]">Cancel</button>
-      </div>
+      {isFinalSubmittedForCurrentCriteria ? null : (
+        <div className="flex justify-center gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              if (validateInlineBeforeSubmit()) {
+                setShowFinalSubmitConfirm(true);
+              }
+            }}
+            disabled={saving}
+            className="rounded bg-[#2f8f4e] px-6 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {saving ? "Submitting..." : "Save"}
+          </button>
+          <button type="button" className="rounded border border-[#d7dfe9] bg-white px-5 py-2 text-sm text-[#5c6777]">Cancel</button>
+        </div>
+      )}
+
+      {showFinalSubmitConfirm ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-xl">
+            <h3 className="text-sm font-semibold text-[#2f3a46]">Confirm final submit</h3>
+            <p className="mt-2 text-sm text-[#5f6876]">
+              Clicking Save will perform final submit for this scoring. Do you want to continue?
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowFinalSubmitConfirm(false)}
+                className="rounded border border-[#d5dae3] bg-white px-4 py-1.5 text-xs text-[#667083]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowFinalSubmitConfirm(false);
+                  void submitScore();
+                }}
+                className="rounded bg-[#2e6b4a] px-4 py-1.5 text-xs text-white hover:bg-[#255a3e]"
+              >
+                Yes, Submit
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

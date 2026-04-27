@@ -365,6 +365,20 @@ export async function getCompanyProjectChecklistDocuments(
   ]);
 }
 
+export async function downloadAssessmentChecklistSampleDocument(
+  projectId: string,
+  sectorId?: string,
+): Promise<{ blob: Blob; filename: string }> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  const qs = sectorId?.trim() ? `?sector_id=${encodeURIComponent(sectorId.trim())}` : "";
+  return await downloadFromPaths([
+    `/api/company/projects/${id}/assessment-checklist-sample-document${qs}`,
+    `/api/companies/projects/${id}/assessment-checklist-sample-document${qs}`,
+    `/api/assessor/projects/${id}/assessment-checklist-sample-document${qs}`,
+    `/api/assessors/projects/${id}/assessment-checklist-sample-document${qs}`,
+  ]);
+}
+
 export async function getCompanyAssessmentCriteriaBySector(sectorId: string): Promise<Record<string, unknown>> {
   const id = encodeURIComponent(sectorId);
   return await getJsonFromPaths([
@@ -447,9 +461,26 @@ export async function finalSubmitAssessorScore(
 export async function downloadAssessorFinalScoring(projectId: string): Promise<{ blob: Blob; filename: string }> {
   const id = encodeURIComponent(ensureProjectId(projectId));
   return await downloadFromPaths([
+    `/api/assessor/projects/${id}/export-scoring-document`,
+    `/api/assessor/projects/${id}/export_scoring_document`,
+    `/api/assessor/auth/export_scoring_document/${id}`,
     `/api/assessor/download_final_scoring/${id}`,
     `/api/assessors/download_final_scoring/${id}`,
     `/api/admin/download_final_scoring/${id}`,
+  ]);
+}
+
+export async function downloadAssessorSampleChecklistDocument(
+  projectId: string,
+  sectorId?: string,
+): Promise<{ blob: Blob; filename: string }> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  const qs = sectorId?.trim() ? `?sector_id=${encodeURIComponent(sectorId.trim())}` : "";
+  return await downloadFromPaths([
+    `/api/assessor/projects/${id}/download-sample-checklist-document${qs}`,
+    `/api/assessor/projects/${id}/download_sample_checklist_document${qs}`,
+    `/api/assessor/auth/download_sample_checklist_document/${id}${qs}`,
+    `/api/assessor/projects/${id}/assessment-checklist-sample-document${qs}`,
   ]);
 }
 
