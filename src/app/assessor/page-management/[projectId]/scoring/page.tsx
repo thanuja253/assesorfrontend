@@ -83,6 +83,10 @@ function getRowKey(row: ScoringRow, index: number): string {
   return String(row.parameter_id ?? row.id ?? `row-${index}`);
 }
 
+function getSubmitLockStorageKey(projectId: string, criteriaId: string): string {
+  return `assessor-final-submit-lock:${projectId}:${criteriaId || "default"}`;
+}
+
 export default function AssessorProjectScoringPage() {
   const routeParams = useParams<{ projectId: string }>();
   const projectId = typeof routeParams?.projectId === "string" ? routeParams.projectId : "";
@@ -101,6 +105,7 @@ export default function AssessorProjectScoringPage() {
   const [saving, setSaving] = useState(false);
   const [showFinalSubmitConfirm, setShowFinalSubmitConfirm] = useState(false);
   const [isFinalSubmittedForCurrentCriteria, setIsFinalSubmittedForCurrentCriteria] = useState(false);
+  const [hideActionButtonsAfterSubmit, setHideActionButtonsAfterSubmit] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -201,6 +206,9 @@ export default function AssessorProjectScoringPage() {
     setActionMessage("");
     const loadRows = async () => {
       try {
+        const submitLockKey = getSubmitLockStorageKey(projectId, selectedCriteriaId);
+        const sessionStorageRef = globalThis.window?.sessionStorage;
+        const storedSubmitLock = sessionStorageRef?.getItem(submitLockKey) === "1";
         const scoringPayload = await getAdminAssessmentScoring(projectId, selectedCriteriaId || undefined);
         if (cancelled) return;
         const scoringObj = (scoringPayload.scoring as Record<string, unknown> | undefined) ?? {};
@@ -250,7 +258,12 @@ export default function AssessorProjectScoringPage() {
             if (typeof submitted === "string") return submitted.trim() === "1" || submitted.trim().toLowerCase() === "true";
             return false;
           });
+        const shouldHideButtons = storedSubmitLock || allSubmitted;
         setIsFinalSubmittedForCurrentCriteria(allSubmitted);
+        setHideActionButtonsAfterSubmit(shouldHideButtons);
+        if (shouldHideButtons) {
+          sessionStorageRef?.setItem(submitLockKey, "1");
+        }
         setError("");
       } catch (e: unknown) {
         if (cancelled) return;
@@ -345,7 +358,10 @@ export default function AssessorProjectScoringPage() {
       };
       await finalSubmitAssessorScore(projectId, payload);
       await getCompanyProjectQuickView(projectId);
+      const submitLockKey = getSubmitLockStorageKey(projectId, selectedCriteriaId);
+      globalThis.window?.sessionStorage?.setItem(submitLockKey, "1");
       setIsFinalSubmittedForCurrentCriteria(true);
+      setHideActionButtonsAfterSubmit(true);
       setActionMessage("Final submit completed successfully.");
     } catch (e: unknown) {
       setActionMessage(e instanceof AuthApiError ? e.message : "Could not submit assessor score.");
@@ -561,7 +577,7 @@ export default function AssessorProjectScoringPage() {
         </p>
       ) : null}
 
-      {isFinalSubmittedForCurrentCriteria ? null : (
+      {isFinalSubmittedForCurrentCriteria || hideActionButtonsAfterSubmit ? null : (
         <div className="flex justify-center gap-3">
           <button
             type="button"
