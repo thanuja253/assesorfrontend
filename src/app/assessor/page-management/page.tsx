@@ -245,9 +245,11 @@ export default function AssessorProjectManagementPage() {
               href={`/assessor/page-management/${encodeURIComponent(
                 row.id ?? row.quickview_project_id ?? "",
               )}/quick-view`}
-              className="rounded border border-[#cfe1f4] bg-[#f4f9ff] px-2 py-1 text-xs text-[#3b79b3] hover:bg-[#e8f3ff]"
+              className="inline-flex h-6 w-6 items-center justify-center rounded border border-[#cfe1f4] bg-[#f4f9ff] text-xs text-[#3b79b3] hover:bg-[#e8f3ff]"
+              title="Quick View"
+              aria-label="Quick View"
             >
-              Quick View
+              ✎
             </a>
           ) : (
             <span className="text-xs text-[#98a4b5]">—</span>
@@ -264,36 +266,7 @@ export default function AssessorProjectManagementPage() {
       </div>
 
       <div className="space-y-4 p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-[280px] flex-1 items-center gap-3">
-            <div className="flex items-center gap-2 text-xs text-[#5f6b7a]">
-              <span>Show</span>
-              <select
-                value={String(pageSize)}
-                onChange={(event) => {
-                  const nextPageSize = Number(event.target.value);
-                  setPage(1);
-                  setPageSize(nextPageSize);
-                }}
-                className="rounded border border-[#d8dfe9] px-2 py-1 text-xs outline-none focus:border-[#6ea3d8]"
-              >
-                <option value="10">10</option>
-                <option value="25">25</option>
-                <option value="50">50</option>
-              </select>
-            </div>
-            <input
-              value={draftFilters.search}
-              onChange={(e) => setDraftFilters((prev) => ({ ...prev, search: e.target.value }))}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  onSearch();
-                }
-              }}
-              placeholder="Search"
-              className="w-full max-w-[420px] rounded border border-[#d8dfe9] px-3 py-1.5 text-sm outline-none focus:border-[#6ea3d8]"
-            />
-          </div>
+        <div className="flex flex-wrap items-center justify-end gap-3">
           <button
             type="button"
             onClick={() => setShowFilters((prev) => !prev)}
@@ -603,33 +576,6 @@ export default function AssessorProjectManagementPage() {
             </thead>
             <tbody className="divide-y divide-[#edf1f6]">{tableContent}</tbody>
           </table>
-        </div>
-
-        <div className="flex flex-col items-start justify-between gap-3 text-sm text-[#6a7788] md:flex-row md:items-center">
-          <p>
-            Showing {start} to {end} of {total} entries
-          </p>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setPage((prev) => Math.max(1, prev - 1))}
-              disabled={page <= 1 || loading}
-              className="rounded border border-[#d2dbe8] bg-white px-3 py-1.5 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Previous
-            </button>
-            <span className="rounded bg-[#eaf1fb] px-3 py-1.5 text-[#35506b]">
-              {page} / {totalPages}
-            </span>
-            <button
-              type="button"
-              onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
-              disabled={page >= totalPages || loading}
-              className="rounded border border-[#d2dbe8] bg-white px-3 py-1.5 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Next
-            </button>
-          </div>
         </div>
       </div>
     </section>

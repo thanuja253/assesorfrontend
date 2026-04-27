@@ -172,8 +172,8 @@ export default function AssessorProjectScoringPage() {
         setSelectedCriteriaId((prev) => prev || parsedCriteria[0]?.id || "");
       } catch (e: unknown) {
         if (cancelled) return;
-        setError(e instanceof AuthApiError ? e.message : "Could not load scoring.");
-          setCriteriaList([]);
+        setActionMessage(e instanceof AuthApiError ? e.message : "Could not load criteria list.");
+        setCriteriaList([]);
         setRows([]);
       } finally {
         if (!cancelled) setLoading(false);
@@ -189,6 +189,7 @@ export default function AssessorProjectScoringPage() {
     let cancelled = false;
     if (!projectId) return () => undefined;
     setLoading(true);
+    setError("");
     setActionMessage("");
     const loadRows = async () => {
       try {
@@ -225,6 +226,7 @@ export default function AssessorProjectScoringPage() {
         });
         setScoresByParam(nextScores);
         setRemarksByParam(nextRemarks);
+        setError("");
       } catch (e: unknown) {
         if (cancelled) return;
         setError(e instanceof AuthApiError ? e.message : "Could not load scoring rows.");

@@ -179,6 +179,52 @@ async function downloadFromPaths(
   throw new AuthApiError(lastStatus || 500, parseApiErrorMessage(lastData) ?? "Could not download file.");
 }
 
+async function postFormDataToPaths(
+  paths: string[],
+  formData: FormData,
+  method: "POST" | "PATCH" = "POST",
+): Promise<Record<string, unknown>> {
+  const headers = authHeaders();
+  let lastStatus = 500;
+  let lastData: unknown = null;
+
+  for (const path of paths) {
+    let response: Response;
+    try {
+      response = await fetch(getApiUrl(path), {
+        method,
+        headers,
+        cache: "no-store",
+        body: formData,
+      });
+    } catch {
+      throw new AuthApiError(0, "Network error. Please try again.");
+    }
+
+    lastStatus = response.status;
+    const data = await parseJsonSafe(response);
+    lastData = data;
+
+    if (response.ok) {
+      return normalizePayload(data);
+    }
+    if (response.status !== 404) {
+      break;
+    }
+  }
+
+  if (lastStatus === 401) {
+    throw new AuthApiError(
+      401,
+      parseApiErrorMessage(lastData) ?? "Invalid or expired session. Please log in again.",
+    );
+  }
+  if (lastStatus === 403) {
+    throw new AuthApiError(403, parseApiErrorMessage(lastData) ?? "Access denied.");
+  }
+  throw new AuthApiError(lastStatus || 500, parseApiErrorMessage(lastData) ?? "Could not save expense.");
+}
+
 export type AssessorProjectTabKey =
   | "quick-view"
   | "visit-details"
@@ -341,6 +387,10 @@ export async function getAdminAssessmentScoring(
   const id = encodeURIComponent(ensureProjectId(projectId));
   const qs = criteriaId?.trim() ? `?crt=${encodeURIComponent(criteriaId.trim())}` : "";
   return await getJsonFromPaths([
+    `/api/assessor/auth/assesment_scoring/${id}${qs}`,
+    `/api/assessor/auth/assessment_scoring/${id}${qs}`,
+    `/api/assessor/assesment_scoring/${id}${qs}`,
+    `/api/assessor/assessment_scoring/${id}${qs}`,
     `/api/admin/assesment_scoring/${id}${qs}`,
     `/api/admin/assessment_scoring/${id}${qs}`,
   ]);
@@ -401,6 +451,104 @@ export async function downloadAssessorFinalScoring(projectId: string): Promise<{
     `/api/assessors/download_final_scoring/${id}`,
     `/api/admin/download_final_scoring/${id}`,
   ]);
+}
+
+export async function getAdminExpenseInvoices(projectId: string): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await getJsonFromPaths([
+    `/api/assessor/projects/${id}/expenses`,
+    `/assessor/projects/${id}/expenses`,
+    `/api/assessors/projects/${id}/expenses`,
+    `/assessors/projects/${id}/expenses`,
+    `/api/assessor/auth/expenses/${id}`,
+    `/assessor/auth/expenses/${id}`,
+    `/api/assessors/auth/expenses/${id}`,
+    `/assessors/auth/expenses/${id}`,
+  ]);
+}
+
+export async function createAdminExpenseInvoice(
+  projectId: string,
+  payload: {
+    invoicetitle: string;
+    invoiceamount: string;
+    sgst: string;
+    cgst: string;
+    igst: string;
+    payment_date: string;
+    regFeeInvoice?: File;
+  },
+): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  const formData = new FormData();
+  formData.set("invoicetitle", payload.invoicetitle);
+  formData.set("invoice_title", payload.invoicetitle);
+  formData.set("invoiceamount", payload.invoiceamount);
+  formData.set("invoice_amount", payload.invoiceamount);
+  formData.set("payable_amount", payload.invoiceamount);
+  formData.set("sgst", payload.sgst);
+  formData.set("cgst", payload.cgst);
+  formData.set("igst", payload.igst);
+  formData.set("payment_date", payload.payment_date);
+  formData.set("payment_for", "expA");
+  if (payload.regFeeInvoice) {
+    formData.set("regFeeInvoice", payload.regFeeInvoice);
+  }
+  return await postFormDataToPaths(
+    [
+      `/api/assessor/projects/${id}/expenses`,
+      `/assessor/projects/${id}/expenses`,
+      `/api/assessors/projects/${id}/expenses`,
+      `/assessors/projects/${id}/expenses`,
+      `/api/assessor/auth/expenses/${id}`,
+      `/assessor/auth/expenses/${id}`,
+      `/api/assessors/auth/expenses/${id}`,
+      `/assessors/auth/expenses/${id}`,
+    ],
+    formData,
+    "POST",
+  );
+}
+
+export async function updateAdminExpenseInvoice(
+  projectId: string,
+  invoiceId: string,
+  payload: {
+    invoicetitle?: string;
+    invoiceamount?: string;
+    sgst?: string;
+    cgst?: string;
+    igst?: string;
+    payment_date?: string;
+    payment_for?: string;
+    regFeeInvoice?: File;
+  },
+): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  const invId = encodeURIComponent(invoiceId.trim());
+  const formData = new FormData();
+  if (payload.invoicetitle !== undefined) formData.set("invoicetitle", payload.invoicetitle);
+  if (payload.invoiceamount !== undefined) formData.set("invoiceamount", payload.invoiceamount);
+  if (payload.sgst !== undefined) formData.set("sgst", payload.sgst);
+  if (payload.cgst !== undefined) formData.set("cgst", payload.cgst);
+  if (payload.igst !== undefined) formData.set("igst", payload.igst);
+  if (payload.payment_date !== undefined) formData.set("payment_date", payload.payment_date);
+  formData.set("payment_for", payload.payment_for ?? "expA");
+  if (payload.regFeeInvoice) formData.set("regFeeInvoice", payload.regFeeInvoice);
+  return await postFormDataToPaths(
+    [
+      `/api/assessor/auth/expenses/${id}/${invId}`,
+      `/assessor/auth/expenses/${id}/${invId}`,
+      `/api/assessors/auth/expenses/${id}/${invId}`,
+      `/assessors/auth/expenses/${id}/${invId}`,
+      `/api/assessor/projects/${id}/expenses/${invId}`,
+      `/assessor/projects/${id}/expenses/${invId}`,
+      `/api/assessors/projects/${id}/expenses/${invId}`,
+      `/assessors/projects/${id}/expenses/${invId}`,
+    ],
+    formData,
+    "PATCH",
+  );
 }
 
 

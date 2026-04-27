@@ -151,14 +151,6 @@ export default function AssessorProjectQuickViewPage() {
   } else if (accountStatusRaw) {
     accountStatusLabel = "Inactive";
   }
-  const logs = pickRecordList(quickView, [
-    "companies_activity",
-    "companies_activty",
-    "company_logs",
-    "activity_logs",
-    "logs",
-    "statuslogs",
-  ]);
   const assignmentRoot = pickFirstRecord(assignments, [
     "assignment_details",
     "assignment",
@@ -214,21 +206,10 @@ export default function AssessorProjectQuickViewPage() {
     "visit_details",
   ]);
   const assessors = quickviewAssessors.length > 0 ? quickviewAssessors : assignmentAssessors;
-  const hasAssessorAssigned = assessors.length > 0;
-  const latestStep = pickFirstRecord(quickView, ["latest_step", "last_activity", "current_activity_data"]);
-  const latestStepName = hasAssessorAssigned
-    ? "CII Assigned an Assessor"
-    : textValue(latestStep.name ?? latestStep.activity ?? latestStep.description);
-  const latestStepStatus = hasAssessorAssigned
-    ? "Completed"
-    : textValue(latestStep.status ?? latestStep.activity_status ?? "—");
-  const latestStepResponsibility = hasAssessorAssigned
-    ? "CII"
-    : textValue(latestStep.responsibility ?? "—");
 
   return (
     <div className="space-y-2">
-      <div className="grid gap-3 xl:grid-cols-3">
+      <div className="grid gap-3 xl:grid-cols-2">
         <SectionCard title="Company Details">
           <KVRow label="Company Name" value={companyName} />
           <KVRow label="Company ID" value={companyRegId} />
@@ -247,30 +228,6 @@ export default function AssessorProjectQuickViewPage() {
                 company.created_at,
             )}
           />
-        </SectionCard>
-
-        <SectionCard title="Company Activity Log">
-          <div className="max-h-[205px] space-y-3 overflow-auto pr-1">
-            <div className="rounded border border-[#e8edf5] bg-[#fafbfd] p-2 text-xs">
-              <p className="font-semibold text-[#2f3a46]">Latest Step</p>
-              <p className="text-[#4f5a69]">{latestStepName}</p>
-              <p className="text-[#6d7888]">
-                Status: {latestStepStatus} | Responsibility: {latestStepResponsibility}
-              </p>
-            </div>
-            {logs.length === 0 ? (
-              <p className="text-sm text-[#7f8a9a]">No activity logs available.</p>
-            ) : (
-              logs.slice(0, 8).map((item) => (
-              <div key={`${textValue(item.date ?? item.created_at)}-${textValue(item.message ?? item.log)}`} className="flex items-start gap-2 text-sm">
-                <span className="mt-1 h-2 w-2 rounded-full bg-[#35c06d]" />
-                <div className="space-y-1">
-                  <p className="text-[#97a1af]">{formatDateDDMMYYYY(item.date ?? item.created_at ?? item.time)}</p>
-                  <p className="text-[#2d3746]">{textValue(item.message ?? item.description ?? item.log)}</p>
-                </div>
-              </div>
-            )))}
-          </div>
         </SectionCard>
 
         <SectionCard title="Facilitator Details">
