@@ -145,6 +145,30 @@ function validateExpenseForm(input: {
   return errors;
 }
 
+function mapServerValidationToFieldErrors(message: string): Record<string, string> {
+  const text = message.trim();
+  const lower = text.toLowerCase();
+  const errors: Record<string, string> = {};
+
+  if (lower.includes("title")) errors.title = text;
+  if (lower.includes("amount")) errors.amount = text;
+  if (lower.includes("sgst")) errors.sgst = text;
+  if (lower.includes("cgst")) errors.cgst = text;
+  if (lower.includes("igst")) errors.igst = text;
+  if (lower.includes("payment") && lower.includes("date")) errors.paymentDate = text;
+  if (
+    lower.includes("document") ||
+    lower.includes("file") ||
+    lower.includes("invoice") ||
+    lower.includes("pdf") ||
+    lower.includes("upload")
+  ) {
+    errors.file = text;
+  }
+
+  return errors;
+}
+
 export default function AssessorProjectExpensesPage() {
   const routeParams = useParams<{ projectId: string }>();
   const projectId = typeof routeParams?.projectId === "string" ? routeParams.projectId : "";
@@ -188,7 +212,17 @@ export default function AssessorProjectExpensesPage() {
     const loadExpenses = async () => {
       try {
         const payload = await getAdminExpenseInvoices(projectId);
-        const invoices = Array.isArray(payload.invoices) ? (payload.invoices as ExpenseInvoiceView[]) : [];
+        const nestedData =
+          payload.data && typeof payload.data === "object"
+            ? (payload.data as Record<string, unknown>)
+            : null;
+        let invoicesSource: unknown[] = [];
+        if (Array.isArray(payload.invoices)) {
+          invoicesSource = payload.invoices;
+        } else if (Array.isArray(nestedData?.invoices)) {
+          invoicesSource = nestedData.invoices;
+        }
+        const invoices = invoicesSource as ExpenseInvoiceView[];
         if (invoices.length > 0) {
           const latest = invoices[0];
           setTitle(String(latest.invoice_title ?? latest.invoicetitle ?? ""));
@@ -253,8 +287,15 @@ export default function AssessorProjectExpensesPage() {
       setLoadError("");
     } catch (e: unknown) {
       const errorMessage = e instanceof AuthApiError ? e.message : "Could not submit expense.";
-      setMessage(errorMessage);
-      setLoadError(errorMessage);
+      const inlineErrors = mapServerValidationToFieldErrors(errorMessage);
+      if (Object.keys(inlineErrors).length > 0) {
+        setFieldErrors((prev) => ({ ...prev, ...inlineErrors }));
+        setMessage("");
+        setLoadError("");
+      } else {
+        setMessage(errorMessage);
+        setLoadError(errorMessage);
+      }
     } finally {
       setSaving(false);
     }

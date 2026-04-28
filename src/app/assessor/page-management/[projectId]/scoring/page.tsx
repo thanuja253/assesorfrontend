@@ -244,6 +244,9 @@ export default function AssessorProjectScoringPage() {
         setRemarksByParam(nextRemarks);
         setScoreErrorsByParam({});
         setRemarkErrorsByParam({});
+        const hasExistingAssessorData =
+          Object.values(nextScores).some((value) => value.trim() !== "") ||
+          Object.values(nextRemarks).some((value) => value.trim() !== "");
         const allSubmitted =
           scoringRows.length > 0 &&
           scoringRows.every((row) => {
@@ -258,7 +261,7 @@ export default function AssessorProjectScoringPage() {
             if (typeof submitted === "string") return submitted.trim() === "1" || submitted.trim().toLowerCase() === "true";
             return false;
           });
-        const shouldHideButtons = storedSubmitLock || allSubmitted;
+        const shouldHideButtons = storedSubmitLock || allSubmitted || hasExistingAssessorData;
         setIsFinalSubmittedForCurrentCriteria(allSubmitted);
         setHideActionButtonsAfterSubmit(shouldHideButtons);
         if (shouldHideButtons) {
