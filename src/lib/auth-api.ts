@@ -21,6 +21,10 @@ export class AuthApiError extends Error {
   }
 }
 
+async function apiFetch(_url: string, _init?: RequestInit): Promise<Response> {
+  throw new AuthApiError(501, "API integrations have been removed from this codebase.");
+}
+
 function resolveApiBaseUrl(): string {
   const fromEnv = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "");
   if (fromEnv) {
@@ -78,7 +82,7 @@ async function loginRequest(path: string, payload: LoginPayload): Promise<LoginS
   let response: Response;
 
   try {
-    response = await fetch(getApiUrl(path), {
+    response = await apiFetch(getApiUrl(path), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -134,7 +138,7 @@ export async function fetchAssessorGrades(): Promise<string[]> {
   let response: Response;
   try {
     const token = getStoredToken();
-    response = await fetch(getApiUrl("/api/company/assessor-grades"), {
+    response = await apiFetch(getApiUrl("/api/company/assessor-grades"), {
       method: "GET",
       headers: {
         Accept: "application/json",
@@ -147,7 +151,7 @@ export async function fetchAssessorGrades(): Promise<string[]> {
 
   const data = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new AuthApiError(response.status, (data as { message?: string } | null)?.message ?? "Could not load assessor grades.");
+    throw new AuthApiError(response.status, (data as { message?: string } | null)?.message ?? "Could not load facilitator grades.");
   }
 
   const root = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
@@ -197,7 +201,7 @@ function uniqByValue(options: SelectOption[]): SelectOption[] {
 export async function fetchStates(): Promise<SelectOption[]> {
   let response: Response;
   try {
-    response = await fetch(getApiUrl("/api/company/states"), {
+    response = await apiFetch(getApiUrl("/api/company/states"), {
       method: "GET",
       headers: { Accept: "application/json" },
     });
@@ -244,7 +248,7 @@ export async function fetchStates(): Promise<SelectOption[]> {
 export async function fetchIndustries(): Promise<SelectOption[]> {
   let response: Response;
   try {
-    response = await fetch(getApiUrl("/api/admin/masters/industries"), {
+    response = await apiFetch(getApiUrl("/api/admin/masters/industries"), {
       method: "GET",
       headers: { Accept: "application/json" },
     });
@@ -443,7 +447,7 @@ async function fetchAssessorProjectsPath(
   queryString: string,
 ): Promise<{ response: Response; data: unknown }> {
   const requestPath = queryString ? `${path}?${queryString}` : path;
-  const response = await fetch(getApiUrl(requestPath), {
+  const response = await apiFetch(getApiUrl(requestPath), {
     method: "GET",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -615,7 +619,7 @@ export async function changeAssessorPassword(
 
   let response: Response;
   try {
-    response = await fetch(getApiUrl("/api/assessor/auth/change-password"), {
+    response = await apiFetch(getApiUrl("/api/assessor/auth/change-password"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -680,7 +684,7 @@ export async function forgotAssessorPassword(payload: {
 
   let response: Response;
   try {
-    response = await fetch(getApiUrl("/api/assessor/auth/forgot-password"), {
+    response = await apiFetch(getApiUrl("/api/assessor/auth/forgot-password"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

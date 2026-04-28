@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { GreencoLogo } from "@/components/GreencoLogo";
 import {
@@ -62,6 +62,7 @@ function Toast({
 
 export default function AssessorLoginPage() {
   const router = useRouter();
+  const pathname = usePathname();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -70,6 +71,12 @@ export default function AssessorLoginPage() {
   const [passwordError, setPasswordError] = useState("");
   const [toastMessage, setToastMessage] = useState("");
   const toastTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (pathname === "/login/assessor") {
+      router.replace("/login/facilitator");
+    }
+  }, [pathname, router]);
 
   useEffect(() => {
     if (!globalThis.window) return;
@@ -115,7 +122,7 @@ export default function AssessorLoginPage() {
       localStorage.setItem(AUTH_TOKEN_KEY, response.token);
       localStorage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify(response.user ?? {}));
       localStorage.setItem(AUTH_LOGIN_EMAIL_KEY, trimmedEmail);
-      router.push("/assessor/dashboard");
+      router.push("/facilitator/dashboard");
     } catch (error) {
       if (error instanceof AuthApiError) {
         const msg = error.message?.trim() || "Something went wrong. Please try again.";
@@ -365,7 +372,7 @@ export default function AssessorLoginPage() {
 
             <div className="mt-4 text-center text-sm">
               <Link
-                href="/forgot-password/role-assessor"
+                href="/forgot-password/role-facilitator"
                 className="font-medium text-[#67a06f] hover:underline"
               >
                 Forgot password?

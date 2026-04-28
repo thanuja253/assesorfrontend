@@ -254,8 +254,8 @@ export function validateAssessorProfile(
     requireText("pincode", "Pincode", values.pincode);
     requireText("pancardNumber", "PAN card number", values.pancardNumber);
     requireText("enrollmentDate", "Enrollment date", values.enrollmentDate);
-    requireText("leadAssessor", "Lead assessor", values.leadAssessor);
-    requireText("assessorGrade", "Assessor grade", values.assessorGrade);
+    requireText("leadAssessor", "Lead facilitator", values.leadAssessor);
+    requireText("assessorGrade", "Facilitator grade", values.assessorGrade);
 
     const a1 = values.addressLine1;
     if (a1.trim()) {

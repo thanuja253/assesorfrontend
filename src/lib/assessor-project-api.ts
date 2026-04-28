@@ -1,6 +1,10 @@
 import { AuthApiError, getApiUrl, parseApiErrorMessage } from "@/lib/auth-api";
 import { AUTH_TOKEN_KEY } from "@/lib/auth-user";
 
+async function apiFetch(_url: string, _init?: RequestInit): Promise<Response> {
+  throw new AuthApiError(501, "API integrations have been removed from this codebase.");
+}
+
 function getStoredToken(): string | null {
   if (globalThis.window === undefined) {
     return null;
@@ -54,7 +58,7 @@ async function getJsonFromPaths(paths: string[]): Promise<Record<string, unknown
   for (const path of paths) {
     let response: Response;
     try {
-      response = await fetch(getApiUrl(path), {
+      response = await apiFetch(getApiUrl(path), {
         method: "GET",
         headers,
         cache: "no-store",
@@ -98,7 +102,7 @@ async function postJsonToPaths(
   for (const path of paths) {
     let response: Response;
     try {
-      response = await fetch(getApiUrl(path), {
+      response = await apiFetch(getApiUrl(path), {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
         cache: "no-store",
@@ -129,7 +133,7 @@ async function postJsonToPaths(
   if (lastStatus === 403) {
     throw new AuthApiError(403, parseApiErrorMessage(lastData) ?? "Access denied.");
   }
-  throw new AuthApiError(lastStatus || 500, parseApiErrorMessage(lastData) ?? "Could not save assessor score.");
+  throw new AuthApiError(lastStatus || 500, parseApiErrorMessage(lastData) ?? "Could not save facilitator score.");
 }
 
 async function downloadFromPaths(
@@ -142,7 +146,7 @@ async function downloadFromPaths(
   for (const path of paths) {
     let response: Response;
     try {
-      response = await fetch(getApiUrl(path), {
+      response = await apiFetch(getApiUrl(path), {
         method: "GET",
         headers,
         cache: "no-store",
@@ -191,7 +195,7 @@ async function postFormDataToPaths(
   for (const path of paths) {
     let response: Response;
     try {
-      response = await fetch(getApiUrl(path), {
+      response = await apiFetch(getApiUrl(path), {
         method,
         headers,
         cache: "no-store",

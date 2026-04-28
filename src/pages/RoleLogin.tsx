@@ -14,7 +14,7 @@ import { isValidEmailFormat } from "@/lib/validation";
 type Role = "assessor" | "company";
 
 const roleLabel: Record<Role, string> = {
-  assessor: "Assessor",
+  assessor: "Facilitator",
   company: "Company",
 };
 
@@ -61,7 +61,7 @@ export default function RoleLogin() {
       localStorage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify(loginResponse.user ?? {}));
       localStorage.setItem(AUTH_LOGIN_EMAIL_KEY, trimmedEmail);
       if (role === "assessor") {
-        router.push("/assessor/dashboard");
+        router.push("/facilitator/dashboard");
       } else {
         router.push("/company/dashboard");
       }

@@ -244,9 +244,9 @@ export default function AssessorProjectQuickViewPage() {
           <KVRow label="Mobile Number" value={coordinatorResolved.mobile ?? coordinatorResolved.phone} />
         </SectionCard>
 
-        <SectionCard title="Assessor Details">
+        <SectionCard title="Facilitator Details">
           {assessors.length === 0 ? (
-            <p className="text-sm text-[#7f8a9a]">No assessor assigned.</p>
+            <p className="text-sm text-[#7f8a9a]">No facilitator assigned.</p>
           ) : (
             <div className="space-y-4">
               {assessors.slice(0, 2).map((assessor, idx) => (

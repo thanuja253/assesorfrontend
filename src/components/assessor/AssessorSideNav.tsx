@@ -16,13 +16,23 @@ export function AssessorSideNav() {
   const router = useRouter();
 
   const isDashboard =
-    pathname === "/assessor/dashboard" || pathname.startsWith("/assessor/dashboard/");
+    pathname === "/facilitator/dashboard" ||
+    pathname.startsWith("/facilitator/dashboard/") ||
+    pathname === "/assessor/dashboard" ||
+    pathname.startsWith("/assessor/dashboard/");
   const isProfile =
-    pathname === "/assessor/profile" || pathname.startsWith("/assessor/profile/");
+    pathname === "/facilitator/profile" ||
+    pathname.startsWith("/facilitator/profile/") ||
+    pathname === "/assessor/profile" ||
+    pathname.startsWith("/assessor/profile/");
   const isChangePassword =
+    pathname === "/facilitator/change-password" ||
+    pathname.startsWith("/facilitator/change-password/") ||
     pathname === "/assessor/change-password" ||
     pathname.startsWith("/assessor/change-password/");
   const isPageManagement =
+    pathname === "/facilitator/page-management" ||
+    pathname.startsWith("/facilitator/page-management/") ||
     pathname === "/assessor/page-management" ||
     pathname.startsWith("/assessor/page-management/");
 
@@ -33,24 +43,24 @@ export function AssessorSideNav() {
 
   const handleLogout = () => {
     clearAssessorSession();
-    router.push("/login/assessor");
+    router.push("/login/facilitator");
   };
 
   return (
     <nav className="mt-2 space-y-0.5 px-2 pb-4">
-      <Link href="/assessor/dashboard" className={itemClass(isDashboard)}>
+      <Link href="/facilitator/dashboard" className={itemClass(isDashboard)}>
         <NavIconDashboard />
         <span>Dashboard</span>
       </Link>
-      <Link href="/assessor/profile" className={itemClass(isProfile)}>
+      <Link href="/facilitator/profile" className={itemClass(isProfile)}>
         <NavIconProfile />
         <span>Profile</span>
       </Link>
-      <Link href="/assessor/page-management" className={itemClass(isPageManagement)}>
+      <Link href="/facilitator/page-management" className={itemClass(isPageManagement)}>
         <NavIconPages />
         <span>Project Management</span>
       </Link>
-      <Link href="/assessor/change-password" className={itemClass(isChangePassword)}>
+      <Link href="/facilitator/change-password" className={itemClass(isChangePassword)}>
         <NavIconPassword />
         <span>Change Password</span>
       </Link>

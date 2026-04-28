@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Assesor Portal",
-  description: "Assesor authentication portal",
+  title: "Facilitator Portal",
+  description: "Facilitator authentication portal",
   icons: {
     icon: "/greenco.png",
     shortcut: "/greenco.png",

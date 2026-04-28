@@ -315,7 +315,7 @@ export default function AssessorProjectScoringPage() {
         nextScoreErrors[rowKey] = `Final assessment score cannot exceed maximum score (${maxScore}).`;
       }
       if (!remarksText) {
-        nextRemarkErrors[rowKey] = "Assessor remarks are required.";
+        nextRemarkErrors[rowKey] = "Facilitator remarks are required.";
       }
     });
     setScoreErrorsByParam(nextScoreErrors);
@@ -349,7 +349,7 @@ export default function AssessorProjectScoringPage() {
       .filter((row): row is { parameter_id: string; assessor_score: number; assessor_remarks: string; remarks: string } => row !== null);
 
     if (payloadRows.length === 0) {
-      setActionMessage("Enter valid assessor score(s) before submit.");
+      setActionMessage("Enter valid facilitator score(s) before submit.");
       return;
     }
     setSaving(true);
@@ -367,7 +367,7 @@ export default function AssessorProjectScoringPage() {
       setHideActionButtonsAfterSubmit(true);
       setActionMessage("Final submit completed successfully.");
     } catch (e: unknown) {
-      setActionMessage(e instanceof AuthApiError ? e.message : "Could not submit assessor score.");
+      setActionMessage(e instanceof AuthApiError ? e.message : "Could not submit facilitator score.");
     } finally {
       setSaving(false);
     }
@@ -540,7 +540,7 @@ export default function AssessorProjectScoringPage() {
                 </div>
                 <div>
                   <p className="mb-2 font-medium text-[#5c6777]">
-                    Assessor Remarks <span className="text-[#d8232a]">*</span>
+                    Facilitator Remarks <span className="text-[#d8232a]">*</span>
                   </p>
                   <textarea
                     className="h-[96px] w-full rounded border border-[#d7dfe9] bg-white px-3 py-2 text-base font-medium text-[#1f2937] caret-[#1f2937] outline-none"

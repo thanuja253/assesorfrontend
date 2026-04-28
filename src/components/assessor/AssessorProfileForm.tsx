@@ -923,7 +923,7 @@ export function AssessorProfileForm() {
       .catch((error: unknown) => {
         if (!cancelled) {
           setAssessorGrades([]);
-          setAssessorGradesError(error instanceof AuthApiError ? error.message : "Could not load assessor grades.");
+          setAssessorGradesError(error instanceof AuthApiError ? error.message : "Could not load facilitator grades.");
         }
       });
     return () => {
@@ -1097,9 +1097,9 @@ export function AssessorProfileForm() {
     requireText("state", "State", form.state);
     requireText("pincode", "Pincode", form.pincode);
     requireText("pancardNumber", "PAN card number", form.pancardNumber);
-    requireText("assessorGrade", "Assessor grade", form.assessorGrade);
+    requireText("assessorGrade", "Facilitator grade", form.assessorGrade);
     requireText("enrollmentDate", "Enrollment date", form.enrollmentDate);
-    requireText("leadAssessor", "Lead assessor", form.leadAssessor);
+    requireText("leadAssessor", "Lead facilitator", form.leadAssessor);
     if (form.gstYes) {
       requireText("gstNumber", "GST number", form.gstNumber);
     }
@@ -1618,7 +1618,7 @@ export function AssessorProfileForm() {
                   <div className="space-y-1">
                     <SearchableSelect
                       id="assessor-grade"
-                      label="Assessor Grade *"
+                      label="Facilitator Grade *"
                       required
                       value={form.assessorGrade}
                       onChange={(next) => {
@@ -1656,7 +1656,7 @@ export function AssessorProfileForm() {
                   </div>
                   <div className="space-y-1">
                     <p className="text-xs font-medium text-[#606a78]">
-                      Lead Assessor <span className="text-[#d63f3f]">*</span>
+                      Lead Facilitator <span className="text-[#d63f3f]">*</span>
                     </p>
                     <div
                       className={`flex items-center gap-5 text-xs ${

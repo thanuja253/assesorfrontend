@@ -2,6 +2,10 @@ import { AuthApiError, getApiUrl, parseApiErrorMessage } from "@/lib/auth-api";
 import { AUTH_TOKEN_KEY } from "@/lib/auth-user";
 import type { AssessorProfileFormValues } from "@/lib/assessor-profile-map";
 
+async function apiFetch(_url: string, _init?: RequestInit): Promise<Response> {
+  throw new AuthApiError(501, "API integrations have been removed from this codebase.");
+}
+
 function getBearerToken(): string | null {
   if (globalThis.window === undefined) {
     return null;
@@ -73,7 +77,7 @@ export async function getAssessorAdminProfile(assessorId: string): Promise<Recor
   const id = encodeURIComponent(assessorId);
   let response: Response;
   try {
-    response = await fetch(getApiUrl(`/api/admin/assessors/${id}`), {
+    response = await apiFetch(getApiUrl(`/api/admin/assessors/${id}`), {
       method: "GET",
       headers: authHeadersJson(),
     });
@@ -104,7 +108,7 @@ export async function getAssessorAdminProfile(assessorId: string): Promise<Recor
 export async function getAssessorMyProfile(): Promise<Record<string, unknown>> {
   let response: Response;
   try {
-    response = await fetch(getApiUrl("/api/assessor/profile/me"), {
+    response = await apiFetch(getApiUrl("/api/assessor/profile/me"), {
       method: "GET",
       headers: {
         ...authHeadersJson(),
@@ -138,7 +142,7 @@ export async function getAssessorMyProfile(): Promise<Record<string, unknown>> {
 export async function createAssessorAdminProfile(formData: FormData): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetch(getApiUrl("/api/admin/assessors/profile"), {
+    response = await apiFetch(getApiUrl("/api/admin/assessors/profile"), {
       method: "POST",
       headers: authHeadersMultipart(),
       body: formData,
@@ -175,7 +179,7 @@ export async function updateAssessorAdminProfile(
   const id = encodeURIComponent(assessorId);
   let response: Response;
   try {
-    response = await fetch(getApiUrl(`/api/admin/assessors/${id}/edit`), {
+    response = await apiFetch(getApiUrl(`/api/admin/assessors/${id}/edit`), {
       method: "PUT",
       headers: authHeadersMultipart(),
       body: cloneFormData(formData),
@@ -215,7 +219,7 @@ async function tryUpdateAssessorProfileFallback(
   for (const path of paths) {
     let response: Response;
     try {
-      response = await fetch(getApiUrl(path), {
+      response = await apiFetch(getApiUrl(path), {
         method: "PUT",
         headers: authHeadersMultipart(),
         body: cloneFormData(formData),
@@ -240,7 +244,7 @@ async function tryUpdateAssessorProfileFallback(
 export async function patchAssessorSelfProfile(formData: FormData): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetch(getApiUrl("/api/assessor/profile"), {
+    response = await apiFetch(getApiUrl("/api/assessor/profile"), {
       method: "PATCH",
       headers: authHeadersMultipart(),
       body: cloneFormData(formData),
@@ -355,7 +359,7 @@ export async function lookupBankDetailsByIfsc(ifsc: string): Promise<IfscLookupD
 
   let response: Response;
   try {
-    response = await fetch(getApiUrl(`/api/company/ifsc/${encodeURIComponent(normalized)}`), {
+    response = await apiFetch(getApiUrl(`/api/company/ifsc/${encodeURIComponent(normalized)}`), {
       method: "GET",
       headers: {
         Accept: "application/json",

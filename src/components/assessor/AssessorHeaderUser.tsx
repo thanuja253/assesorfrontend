@@ -13,7 +13,7 @@ export function AssessorHeaderUser() {
       >
         {displayHandle || "—"}
       </p>
-      <p className="text-[10px] text-[#747d89]">Assessor</p>
+      <p className="text-[10px] text-[#747d89]">Facilitator</p>
     </div>
   );
 }

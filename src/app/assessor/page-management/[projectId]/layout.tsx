@@ -1,11 +1,11 @@
 import ProjectTabs from "./_tabs";
 
 const TABS: { key: string; label: string; href: (projectId: string) => string }[] = [
-  { key: "quick-view", label: "Quick view", href: (id) => `/assessor/page-management/${id}/quick-view` },
-  { key: "launch-training", label: "Launch & Training Program", href: (id) => `/assessor/page-management/${id}/launch-training` },
-  { key: "expenses", label: "Finance", href: (id) => `/assessor/page-management/${id}/expenses` },
-  { key: "assessment-checklist-documents", label: "View Assessment Submittals", href: (id) => `/assessor/page-management/${id}/assessment-checklist-documents` },
-  { key: "scoring", label: "Assessment Scoring", href: (id) => `/assessor/page-management/${id}/scoring` },
+  { key: "quick-view", label: "Quick view", href: (id) => `/facilitator/page-management/${id}/quick-view` },
+  { key: "launch-training", label: "Launch & Training Program", href: (id) => `/facilitator/page-management/${id}/launch-training` },
+  { key: "expenses", label: "Finance", href: (id) => `/facilitator/page-management/${id}/expenses` },
+  { key: "assessment-checklist-documents", label: "View Assessment Submittals", href: (id) => `/facilitator/page-management/${id}/assessment-checklist-documents` },
+  { key: "scoring", label: "Assessment Scoring", href: (id) => `/facilitator/page-management/${id}/scoring` },
 ];
 
 export default async function AssessorProjectLayout({

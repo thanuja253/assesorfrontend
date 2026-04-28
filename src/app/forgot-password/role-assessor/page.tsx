@@ -57,7 +57,7 @@ export default function AssessorForgotPasswordPage() {
           result.message || "Password reset link sent to your email.",
         );
       }
-      router.push("/login/assessor");
+      router.push("/login/facilitator");
     } catch (error) {
       if (error instanceof AuthApiError) {
         setEmailError(error.message);
@@ -183,7 +183,7 @@ export default function AssessorForgotPasswordPage() {
             </form>
 
             <div className="mt-4 text-center text-sm">
-              <Link href="/login/assessor" className="font-medium text-[#67a06f] hover:underline">
+              <Link href="/login/facilitator" className="font-medium text-[#67a06f] hover:underline">
                 ← Back to login
               </Link>
             </div>
