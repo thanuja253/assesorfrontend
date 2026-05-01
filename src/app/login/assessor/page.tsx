@@ -9,7 +9,7 @@ import {
   AUTH_TOKEN_KEY,
   AUTH_USER_STORAGE_KEY,
 } from "@/lib/auth-user";
-import { AuthApiError, loginAssessor } from "@/lib/auth-api";
+import { AuthApiError, loginFacilitator } from "@/lib/auth-api";
 import { isValidEmailFormat } from "@/lib/validation";
 
 const highlights = [
@@ -118,7 +118,7 @@ export default function AssessorLoginPage() {
 
     setIsSubmitting(true);
     try {
-      const response = await loginAssessor({ email: trimmedEmail, password });
+      const response = await loginFacilitator({ email: trimmedEmail, password });
       localStorage.setItem(AUTH_TOKEN_KEY, response.token);
       localStorage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify(response.user ?? {}));
       localStorage.setItem(AUTH_LOGIN_EMAIL_KEY, trimmedEmail);

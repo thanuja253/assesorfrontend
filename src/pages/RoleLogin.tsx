@@ -7,7 +7,7 @@ import {
   AUTH_TOKEN_KEY,
   AUTH_USER_STORAGE_KEY,
 } from "@/lib/auth-user";
-import { AuthApiError, loginAssessor, loginCompany } from "@/lib/auth-api";
+import { AuthApiError, loginCompany, loginFacilitator } from "@/lib/auth-api";
 import { GreencoLogo } from "@/components/GreencoLogo";
 import { isValidEmailFormat } from "@/lib/validation";
 
@@ -54,7 +54,7 @@ export default function RoleLogin() {
       const payload = { email: trimmedEmail, password };
       const loginResponse =
         role === "assessor"
-          ? await loginAssessor(payload)
+          ? await loginFacilitator(payload)
           : await loginCompany(payload);
 
       localStorage.setItem(AUTH_TOKEN_KEY, loginResponse.token);

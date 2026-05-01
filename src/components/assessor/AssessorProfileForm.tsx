@@ -1,12 +1,12 @@
 "use client";
 
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AuthApiError, fetchAssessorGrades, fetchIndustries, fetchStates, getApiUrl, type SelectOption } from "@/lib/auth-api";
+import { AuthApiError, fetchIndustries, fetchStates, getApiUrl, type SelectOption } from "@/lib/auth-api";
 import {
   type AssessorProfileFileKey,
   buildAssessorProfileFormData,
+  getFacilitatorByEmail,
   getAssessorMyProfile,
-  lookupBankDetailsByIfsc,
   patchAssessorSelfProfile,
 } from "@/lib/assessor-profile-api";
 import { mapServerProfileToFormValues, type AssessorProfileFormValues } from "@/lib/assessor-profile-map";
@@ -16,9 +16,14 @@ import {
   emptyDocCheckStatuses,
   extractDocCheckStatuses,
   extractHasProfileImageFromServer,
+  getDocumentFileValidationError,
+  hasEducationalQualificationKeyword,
+  hasSpecializationKeyword,
+  isAreaSpecializationPattern,
   isDigitsOnly,
   isIndianMobile,
   isPincodeDigits,
+  isQualificationCertificationPattern,
   type DocStatusFileKey,
   type ProfileFieldErrors,
   validateAssessorProfile,
@@ -26,6 +31,9 @@ import {
 import { AUTH_LOGIN_EMAIL_KEY, getAssessorIdFromStoredUser } from "@/lib/auth-user";
 
 const emptyForm: AssessorProfileFormValues = {
+  consultantId: "",
+  accountStatus: "",
+  accountActivationDate: "",
   name: "",
   email: "",
   mobile: "",
@@ -41,7 +49,10 @@ const emptyForm: AssessorProfileFormValues = {
   pincode: "",
   pancardNumber: "",
   gstNumber: "",
+  companyWebsiteDetails: "",
+  linkedinProfile: "",
   gstYes: true,
+  declarationAccepted: true,
   emergencyContactName: "",
   emergencyMobile: "",
   emergencyAddressLine1: "",
@@ -56,19 +67,17 @@ const emptyForm: AssessorProfileFormValues = {
 };
 
 const DOCUMENT_ROWS: { label: string; key: AssessorProfileFileKey }[] = [
-  { label: "Bio Data", key: "biodata" },
-  { label: "Vendor Registration Form", key: "vendor_registration_form" },
-  { label: "Non-Disclosure Agreement", key: "non_disclosure_agreement" },
-  { label: "Health Declaration", key: "health_declaration" },
-  { label: "GST Declaration", key: "gst_declaration" },
-  { label: "PAN Card", key: "pan_card" },
-  { label: "Cancelled Cheque", key: "cancelled_cheque" },
+  { label: "Upload Vendor Form", key: "vendor_registration_form" },
+  { label: "Brief Profile - Individual", key: "biodata" },
+  { label: "Brief Profile - Organization", key: "non_disclosure_agreement" },
+  { label: "Projects Handled (in last 2 years)", key: "health_declaration" },
 ];
 
 type ProfileTab = "profile" | "bankDocs";
 
 const PROFILE_TAB_FIELDS = new Set<string>([
   "profile_image",
+  "consultantId",
   "name",
   "email",
   "mobile",
@@ -79,22 +88,16 @@ const PROFILE_TAB_FIELDS = new Set<string>([
   "city",
   "state",
   "pincode",
+  "accountStatus",
+  "accountActivationDate",
   "pancardNumber",
   "gstNumber",
-  "emergencyContactName",
-  "emergencyMobile",
-  "emergencyAddressLine1",
-  "emergencyAddressLine2",
-  "emergencyCity",
-  "emergencyState",
-  "emergencyPincode",
+  "companyWebsiteDetails",
+  "linkedinProfile",
+  "declarationAccepted",
 ]);
 
 const BANK_DOC_TAB_FIELDS = new Set<string>([
-  "bankName",
-  "accountNumber",
-  "branchName",
-  "ifscCode",
   ...DOCUMENT_ROWS.map((row) => row.key),
 ]);
 
@@ -116,13 +119,23 @@ function effectiveDocRowStatus(
   docKey: DocStatusFileKey,
   docStatuses: Record<DocStatusFileKey, string>,
   serverDocNames: Record<DocStatusFileKey, string>,
+  profileApprovalStatus: "Pending" | "Approved" | "Rejected" | "" = "",
 ): string {
   const rawStatus = (docStatuses[docKey] ?? "0").trim();
   const serverName = serverDocNames[docKey]?.trim() ?? "";
   if (rawStatus !== "0") {
     return rawStatus;
   }
-  return serverName ? "3" : "0";
+  if (!serverName) {
+    return "0";
+  }
+  if (profileApprovalStatus === "Approved") {
+    return "1";
+  }
+  if (profileApprovalStatus === "Rejected") {
+    return "2";
+  }
+  return "3";
 }
 
 function fileNameOrDash(file: File | null | undefined): string {
@@ -159,8 +172,15 @@ function fileNameFromPath(pathOrUrl: string): string {
 }
 
 function pickServerDocFileName(payload: Record<string, unknown>, key: string): string {
+  const aliasByKey: Record<string, string[]> = {
+    biodata: ["brief_profile_individual"],
+    non_disclosure_agreement: ["brief_profile_organization"],
+    health_declaration: ["projects_handled"],
+  };
+  const aliases = aliasByKey[key] ?? [];
   const candidates = [
     key,
+    ...aliases,
     `${key}_url`,
     `${key}Url`,
     `${key}_path`,
@@ -171,6 +191,16 @@ function pickServerDocFileName(payload: Record<string, unknown>, key: string): s
     `${key}Filename`,
     `${key}_name`,
     `${key}Name`,
+    ...aliases.map((alias) => `${alias}_url`),
+    ...aliases.map((alias) => `${alias}Url`),
+    ...aliases.map((alias) => `${alias}_path`),
+    ...aliases.map((alias) => `${alias}Path`),
+    ...aliases.map((alias) => `${alias}_file`),
+    ...aliases.map((alias) => `${alias}File`),
+    ...aliases.map((alias) => `${alias}_filename`),
+    ...aliases.map((alias) => `${alias}Filename`),
+    ...aliases.map((alias) => `${alias}_name`),
+    ...aliases.map((alias) => `${alias}Name`),
   ];
   for (const k of candidates) {
     const value = payload[k];
@@ -203,6 +233,35 @@ function normalizeApprovalState(value: unknown): "approved" | "rejected" | "pend
   return "";
 }
 
+function formatAccountActivationDate(value: string): string {
+  const raw = value.trim();
+  if (!raw) {
+    return "-";
+  }
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) {
+    return raw;
+  }
+  const day = String(parsed.getDate()).padStart(2, "0");
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const year = String(parsed.getFullYear());
+  return `${day}-${month}-${year}`;
+}
+
+function normalizeAccountStatus(value: string): { label: string; className: string } {
+  const raw = value.trim().toLowerCase();
+  if (!raw) {
+    return { label: "-", className: "text-[#2b3340]" };
+  }
+  if (raw === "1" || raw === "active") {
+    return { label: "Active", className: "text-[#2e7d32]" };
+  }
+  if (raw === "0" || raw === "inactive") {
+    return { label: "Inactive", className: "text-[#a94442]" };
+  }
+  return { label: value.trim(), className: "text-[#2b3340]" };
+}
+
 function docStatusesFromDocumentApprovals(
   payload: Record<string, unknown>,
 ): {
@@ -231,7 +290,13 @@ function docStatusesFromDocumentApprovals(
   const names = emptyDocMeta();
 
   for (const key of keys) {
-    const entry = approvals[key];
+    const aliasByKey: Partial<Record<DocStatusFileKey, string>> = {
+      biodata: "brief_profile_individual",
+      non_disclosure_agreement: "brief_profile_organization",
+      health_declaration: "projects_handled",
+    };
+    const aliasEntry = aliasByKey[key] ? approvals[aliasByKey[key]!] : undefined;
+    const entry = aliasEntry ?? approvals[key];
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       continue;
     }
@@ -622,21 +687,21 @@ export function AssessorProfileForm() {
   const [savingKind, setSavingKind] = useState<"draft" | "final" | null>(null);
   const [activeTab, setActiveTab] = useState<ProfileTab>("profile");
   const [showFinalSubmitConfirm, setShowFinalSubmitConfirm] = useState(false);
-  const [ifscLookupLoading, setIfscLookupLoading] = useState(false);
-  const [ifscLookupError, setIfscLookupError] = useState("");
-  const ifscLookupTimerRef = useRef<number | null>(null);
-  const lastIfscLookupRef = useRef<string>("");
-  const accountNumberTimerRef = useRef<number | null>(null);
   const alternateMobileTimerRef = useRef<number | null>(null);
-  const emergencyMobileTimerRef = useRef<number | null>(null);
   const pancardTimerRef = useRef<number | null>(null);
   const pincodeTimerRef = useRef<number | null>(null);
-  const emergencyPincodeTimerRef = useRef<number | null>(null);
+  const educationalQualificationTimerRef = useRef<number | null>(null);
+  const qualificationTimerRef = useRef<number | null>(null);
+  const specializationTimerRef = useRef<number | null>(null);
+  const enrollmentTimerRef = useRef<number | null>(null);
+  const companyWebsiteTimerRef = useRef<number | null>(null);
+  const linkedinTimerRef = useRef<number | null>(null);
   const [profileLocked, setProfileLocked] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [canOpenBankDocsInEditMode, setCanOpenBankDocsInEditMode] = useState(false);
-  const [assessorGrades, setAssessorGrades] = useState<string[]>([]);
-  const [assessorGradesError, setAssessorGradesError] = useState("");
+  const savingRef = useRef(false);
+  const refreshingRef = useRef(false);
+  const editModeRef = useRef(false);
   const [stateOptions, setStateOptions] = useState<SelectOption[]>([]);
   const [industryOptions, setIndustryOptions] = useState<SelectOption[]>([]);
   const [stateOptionsError, setStateOptionsError] = useState("");
@@ -687,16 +752,17 @@ export function AssessorProfileForm() {
     return "";
   }, []);
 
-  const validatePanInline = useCallback((valueRaw: string): string => {
-    const compact = valueRaw.trim().replaceAll(" ", "").toUpperCase();
-    if (!compact) {
+  const validateYearsInline = useCallback((valueRaw: string): string => {
+    const value = valueRaw.trim();
+    if (!value) {
       return "";
     }
-    if (compact.length !== 10) {
-      return "PAN must be exactly 10 characters.";
+    if (!/^\d+$/.test(value)) {
+      return "Only numbers are allowed.";
     }
-    if (!/^[A-Z0-9]+$/.test(compact)) {
-      return "Please Enter a Valid PAN Card No";
+    const numericYears = Number(value);
+    if (!Number.isFinite(numericYears) || numericYears < 0 || numericYears > 99) {
+      return "Enter valid years between 0 and 99.";
     }
     return "";
   }, []);
@@ -708,6 +774,70 @@ export function AssessorProfileForm() {
     }
     if (!isPincodeDigits(value)) {
       return `${label} must be exactly 6 digits.`;
+    }
+    return "";
+  }, []);
+
+  const validateUrlInline = useCallback((valueRaw: string, label: string): string => {
+    const value = valueRaw.trim();
+    if (!value) {
+      return "";
+    }
+    try {
+      const parsed = new URL(value);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return `${label} must be a valid URL (http/https).`;
+      }
+    } catch {
+      return `${label} must be a valid URL (http/https).`;
+    }
+    return "";
+  }, []);
+
+  const validateQualificationInline = useCallback((valueRaw: string): string => {
+    const value = valueRaw.trim();
+    if (!value) {
+      return "";
+    }
+    if (!isQualificationCertificationPattern(value)) {
+      return "Enter valid qualification/certification details (letters, numbers and , . / ( ) & + - only).";
+    }
+    if (value.length < 3 || value.length > 120) {
+      return "Qualification/certification must be 3 to 120 characters.";
+    }
+    return "";
+  }, []);
+
+  const validateEducationalQualificationInline = useCallback((valueRaw: string): string => {
+    const value = valueRaw.trim();
+    if (!value) {
+      return "";
+    }
+    if (!isQualificationCertificationPattern(value)) {
+      return "Enter valid educational qualification (letters, numbers and , . / ( ) & + - only).";
+    }
+    if (value.length < 2 || value.length > 80) {
+      return "Educational qualification must be 2 to 80 characters.";
+    }
+    if (!hasEducationalQualificationKeyword(value)) {
+      return "Enter a valid educational qualification.";
+    }
+    return "";
+  }, []);
+
+  const validateSpecializationInline = useCallback((valueRaw: string): string => {
+    const value = valueRaw.trim();
+    if (!value) {
+      return "";
+    }
+    if (!isAreaSpecializationPattern(value)) {
+      return "Enter valid area(s) of specialization (letters and , . / & + - only).";
+    }
+    if (value.length < 2 || value.length > 120) {
+      return "Area(s) of specialization must be 2 to 120 characters.";
+    }
+    if (!hasSpecializationKeyword(value)) {
+      return "Enter a valid area of specialization.";
     }
     return "";
   }, []);
@@ -729,8 +859,17 @@ export function AssessorProfileForm() {
   );
 
   const isRejected = approvalStatus === "Rejected";
-  const showUpdateButton = isRejected && !editMode;
+  const hasRejectedDocs = useMemo(() => {
+    const docKeys = Object.keys(DOC_STATUS_FORM_KEYS) as DocStatusFileKey[];
+    return docKeys.some((key) => (docStatuses[key] ?? "0").trim() === "2");
+  }, [docStatuses]);
+  const showUpdateButton = (isRejected || hasRejectedDocs) && !editMode;
   const showProfileStepActions = !profileLocked;
+  const accountStatusView = useMemo(() => normalizeAccountStatus(form.accountStatus), [form.accountStatus]);
+  const accountActivationDateView = useMemo(
+    () => formatAccountActivationDate(form.accountActivationDate),
+    [form.accountActivationDate],
+  );
 
   const shouldAutoPollProfile = useMemo(() => {
     if (loading) {
@@ -751,11 +890,25 @@ export function AssessorProfileForm() {
     });
   }, [approvalStatus, docStatuses, loading, profileLocked]);
 
+  useEffect(() => {
+    savingRef.current = saving;
+  }, [saving]);
+
+  useEffect(() => {
+    refreshingRef.current = refreshing;
+  }, [refreshing]);
+
+  useEffect(() => {
+    editModeRef.current = editMode;
+  }, [editMode]);
+
   const refreshProfileFromServer = useCallback(async () => {
     const loginEmail = getLoginEmailFromStorage();
     const payload = await getAssessorMyProfile();
+    const facilitatorRecord = loginEmail ? await getFacilitatorByEmail(loginEmail).catch(() => null) : null;
+    const mergedPayload = facilitatorRecord ? { ...payload, ...facilitatorRecord } : payload;
 
-    const statusValue = payload.approval_status ?? payload.approvalStatus ?? "";
+    const statusValue = mergedPayload.approval_status ?? mergedPayload.approvalStatus ?? "";
     const statusRaw =
       typeof statusValue === "string" ? statusValue.trim() : String(statusValue ?? "").trim();
     let statusNormalized: "Pending" | "Approved" | "Rejected" | "" = "";
@@ -768,7 +921,7 @@ export function AssessorProfileForm() {
       statusNormalized = "Pending";
     }
 
-    const mapped = mapServerProfileToFormValues(payload);
+    const mapped = mapServerProfileToFormValues(mergedPayload);
     if (!mapped.email && loginEmail) {
       mapped.email = loginEmail;
     }
@@ -778,24 +931,24 @@ export function AssessorProfileForm() {
       applyValues(mapped);
     }
 
-    const fromApprovals = docStatusesFromDocumentApprovals(payload);
-    const legacyDocStatuses = extractDocCheckStatuses(payload);
+    const fromApprovals = docStatusesFromDocumentApprovals(mergedPayload);
+    const legacyDocStatuses = extractDocCheckStatuses(mergedPayload);
     const doc = normalizeLegacyDocStatusesForProfileRejection(
       statusNormalized,
       fromApprovals,
       legacyDocStatuses,
     );
-    const hasImg = extractHasProfileImageFromServer(payload);
-    const imgUrl = pickProfileImageUrl(payload);
+    const hasImg = extractHasProfileImageFromServer(mergedPayload);
+    const imgUrl = pickProfileImageUrl(mergedPayload);
     setProfileImageLoadError("");
     const fallbackDocNames: Record<DocStatusFileKey, string> = {
-      biodata: pickServerDocFileName(payload, "biodata"),
-      cancelled_cheque: pickServerDocFileName(payload, "cancelled_cheque"),
-      gst_declaration: pickServerDocFileName(payload, "gst_declaration"),
-      vendor_registration_form: pickServerDocFileName(payload, "vendor_registration_form"),
-      non_disclosure_agreement: pickServerDocFileName(payload, "non_disclosure_agreement"),
-      health_declaration: pickServerDocFileName(payload, "health_declaration"),
-      pan_card: pickServerDocFileName(payload, "pan_card"),
+      biodata: pickServerDocFileName(mergedPayload, "biodata"),
+      cancelled_cheque: pickServerDocFileName(mergedPayload, "cancelled_cheque"),
+      gst_declaration: pickServerDocFileName(mergedPayload, "gst_declaration"),
+      vendor_registration_form: pickServerDocFileName(mergedPayload, "vendor_registration_form"),
+      non_disclosure_agreement: pickServerDocFileName(mergedPayload, "non_disclosure_agreement"),
+      health_declaration: pickServerDocFileName(mergedPayload, "health_declaration"),
+      pan_card: pickServerDocFileName(mergedPayload, "pan_card"),
     };
     const docNames: Record<DocStatusFileKey, string> = (() => {
       if (!fromApprovals?.names) {
@@ -825,7 +978,9 @@ export function AssessorProfileForm() {
     setHasExistingProfile(true);
 
     const docKeys = Object.keys(DOC_STATUS_FORM_KEYS) as DocStatusFileKey[];
-    const effectiveDocValues = docKeys.map((key) => effectiveDocRowStatus(key, doc, docNames));
+    const effectiveDocValues = docKeys.map((key) =>
+      effectiveDocRowStatus(key, doc, docNames, statusNormalized),
+    );
     const hasRejectedDoc = effectiveDocValues.some((value) => String(value).trim() === "2");
     const allApprovedDocs =
       effectiveDocValues.length > 0 && effectiveDocValues.every((value) => String(value).trim() === "1");
@@ -848,14 +1003,14 @@ export function AssessorProfileForm() {
     const locked =
       derivedStatus === "Approved" ||
       (derivedStatus === "Pending" && hasAnyUploadedDoc) ||
-      (isProfileLockedFromPayload(payload) && derivedStatus !== "Rejected");
+      (isProfileLockedFromPayload(mergedPayload) && derivedStatus !== "Rejected");
 
     const baseLocked = derivedStatus === "Rejected" ? true : locked;
-    setProfileLocked(editMode ? false : baseLocked);
+    setProfileLocked(editModeRef.current ? false : baseLocked);
     if (derivedStatus !== "Rejected") {
       setEditMode(false);
     }
-  }, [applyValues, editMode]);
+  }, [applyValues]);
 
   const reloadLatestProfileStatus = useCallback(async () => {
     setRefreshing(true);
@@ -913,26 +1068,6 @@ export function AssessorProfileForm() {
 
   useEffect(() => {
     let cancelled = false;
-    fetchAssessorGrades()
-      .then((grades) => {
-        if (!cancelled) {
-          setAssessorGrades(grades);
-          setAssessorGradesError("");
-        }
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          setAssessorGrades([]);
-          setAssessorGradesError(error instanceof AuthApiError ? error.message : "Could not load facilitator grades.");
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
     fetchStates()
       .then((options) => {
         if (!cancelled) {
@@ -981,7 +1116,6 @@ export function AssessorProfileForm() {
     setEditMode(false);
     setCanOpenBankDocsInEditMode(false);
     setFieldErrors({});
-    setIfscLookupError("");
     if (snapshotRef.current) {
       setForm(snapshotRef.current);
       setFiles({ ...filesSnapshotRef.current });
@@ -1044,7 +1178,7 @@ export function AssessorProfileForm() {
     let cancelled = false;
     const tryReload = () => {
       if (cancelled) return;
-      if (saving || refreshing) return;
+      if (savingRef.current || refreshingRef.current) return;
       void reloadLatestProfileStatus();
     };
 
@@ -1072,7 +1206,7 @@ export function AssessorProfileForm() {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       globalThis.window?.removeEventListener("focus", onFocus);
     };
-  }, [reloadLatestProfileStatus, refreshing, saving, shouldAutoPollProfile]);
+  }, [reloadLatestProfileStatus, shouldAutoPollProfile]);
 
   const validateProfileStep = (): ProfileFieldErrors => {
     const errors: ProfileFieldErrors = {};
@@ -1096,13 +1230,19 @@ export function AssessorProfileForm() {
     requireText("city", "City", form.city);
     requireText("state", "State", form.state);
     requireText("pincode", "Pincode", form.pincode);
-    requireText("pancardNumber", "PAN card number", form.pancardNumber);
-    requireText("assessorGrade", "Facilitator grade", form.assessorGrade);
-    requireText("enrollmentDate", "Enrollment date", form.enrollmentDate);
-    requireText("leadAssessor", "Lead facilitator", form.leadAssessor);
-    if (form.gstYes) {
-      requireText("gstNumber", "GST number", form.gstNumber);
-    }
+    requireText(
+      "pancardNumber",
+      "No. of years working in environmental sustainability facilitation services",
+      form.pancardNumber,
+    );
+    requireText("assessorGrade", "Educational qualification", form.assessorGrade);
+    requireText("enrollmentDate", "Total no. of years of professional experience", form.enrollmentDate);
+    requireText(
+      "leadAssessor",
+      "Additional professional qualification/certifications",
+      form.leadAssessor,
+    );
+    requireText("gstNumber", "Areas of specialization", form.gstNumber);
 
     // Emergency contact required on Save & Continue (step 1)
     requireText("emergencyContactName", "Emergency contact name", form.emergencyContactName);
@@ -1131,72 +1271,21 @@ export function AssessorProfileForm() {
   }, [profileLocked, validateProfileStep]);
   const canAccessBankDocsTab = isProfileStepComplete && (!editMode || canOpenBankDocsInEditMode);
 
-  const saveAndContinue = async (): Promise<void> => {
+  const handleSaveClick = (): void => {
     setSaveError("");
     setSaveSuccess("");
-    setIfscLookupError("");
-
-    const stepErrors = validateProfileStep();
-    if (Object.keys(stepErrors).length > 0) {
-      setFieldErrors(stepErrors);
-      setActiveTab("profile");
+    const validationContext = {
+      finalSubmit: true,
+      hasServerProfileImage,
+      docStatuses,
+    };
+    const errors = validateAssessorProfile(form, files, validationContext);
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
       return;
     }
-
-    setSavingKind("draft");
-    setSaving(true);
-    try {
-      const body = buildAssessorProfileFormData(form, files, {
-        includeBankDetails: false,
-        includeDocuments: false,
-      });
-      await patchAssessorSelfProfile(body);
-      setHasExistingProfile(true);
-      setFieldErrors({});
-      snapshotRef.current = { ...form };
-      filesSnapshotRef.current = { ...files };
-      setFiles((prev) => ({ ...prev, profile_image: prev.profile_image ?? null }));
-    } catch (error) {
-      setSaveError(error instanceof AuthApiError ? error.message : "Could not save profile.");
-    } finally {
-      setSaving(false);
-      setSavingKind(null);
-      // Even if draft-save fails (backend may still require bank/docs),
-      // allow user to proceed to step-2 to complete bank + documents.
-      setCanOpenBankDocsInEditMode(true);
-      setActiveTab("bankDocs");
-    }
-  };
-
-  const runIfscLookup = async (normalized: string) => {
-    if (!normalized) return;
-    if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(normalized)) {
-      setIfscLookupError("Enter valid IFSC format (example: SBIN0005943).");
-      return;
-    }
-    if (lastIfscLookupRef.current === normalized) {
-      return;
-    }
-    lastIfscLookupRef.current = normalized;
-
-    setIfscLookupError("");
-    setIfscLookupLoading(true);
-    try {
-      const details = await lookupBankDetailsByIfsc(normalized);
-      if (details.bank_name?.trim()) {
-        setField("bankName", details.bank_name.trim());
-        clearFieldError("bankName");
-      }
-      if (details.branch_name?.trim()) {
-        setField("branchName", details.branch_name.trim());
-        clearFieldError("branchName");
-      }
-      clearFieldError("ifscCode");
-    } catch (error) {
-      setIfscLookupError(error instanceof AuthApiError ? error.message : "Could not fetch bank details.");
-    } finally {
-      setIfscLookupLoading(false);
-    }
+    setFieldErrors({});
+    setShowFinalSubmitConfirm(true);
   };
 
   const persistProfile = async (finalSubmit: boolean): Promise<boolean> => {
@@ -1309,38 +1398,12 @@ export function AssessorProfileForm() {
 
       <div className="space-y-6">
         <div className="flex flex-wrap gap-4">
-          <button
-            type="button"
-            onClick={() => setActiveTab("profile")}
-            className={`px-0 py-1 text-sm font-semibold ${
-              activeTab === "profile"
-                ? "text-[var(--gc-primary)] underline underline-offset-4"
-                : "text-[#667083] hover:text-[#2f3a46]"
-            }`}
-          >
-            Profile Details
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (!canAccessBankDocsTab) return;
-              setActiveTab("bankDocs");
-            }}
-            disabled={!canAccessBankDocsTab}
-            aria-disabled={!canAccessBankDocsTab ? true : undefined}
-            className={`px-0 py-1 text-sm font-semibold ${
-              activeTab === "bankDocs"
-                ? "text-[var(--gc-primary)] underline underline-offset-4"
-                : !canAccessBankDocsTab
-                  ? "cursor-not-allowed text-[#a8b0bd]"
-                  : "text-[#667083] hover:text-[#2f3a46]"
-            }`}
-          >
-            Bank Details & Upload Documents
-          </button>
+          <p className="px-0 py-1 text-sm font-semibold text-[var(--gc-primary)]">
+            Profile Details & Attachments
+          </p>
         </div>
 
-        {activeTab === "profile" ? (
+        {
           <>
             <div>
               <p className="mb-2 text-xs font-semibold text-[#4f5a68]">Basic Details</p>
@@ -1437,26 +1500,21 @@ export function AssessorProfileForm() {
                     <p className="text-xs text-[#7a8798]">Profile image is locked after submission.</p>
                   )}
                 </div>
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 lg:col-start-2">
                   <TextField label="Name *" disabled {...bindText("name")} />
+                  <TextField label="Consultant ID" disabled {...bindText("consultantId")} />
                   <TextField label="Email Address *" type="email" disabled {...bindText("email")} />
                   <TextField label="Mobile Number *" disabled {...bindText("mobile")} />
-                  <div className="space-y-1">
-                    <SearchableSelect
-                      id="industry-category"
-                      label="Industry Category *"
-                      required
-                      value={form.industryCategory}
-                      onChange={(next) => {
-                        setField("industryCategory", next);
-                        clearFieldError("industryCategory");
-                      }}
-                      options={industryOptions}
-                      placeholder="Select Industry"
-                      disabled={profileLocked}
-                      error={fieldErrors.industryCategory || industryOptionsError}
-                    />
-                  </div>
+                  <TextField
+                    label="Organization *"
+                    value={form.industryCategory}
+                    onChange={(next) => {
+                      setField("industryCategory", next);
+                      clearFieldError("industryCategory");
+                    }}
+                    error={fieldErrors.industryCategory}
+                    disabled={profileLocked}
+                  />
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-[#606a78]">Alternate Mobile Number</label>
                     <input
@@ -1504,6 +1562,20 @@ export function AssessorProfileForm() {
                   <TextField label="Address Line 1 *" {...bindText("addressLine1")} />
                   <TextField label="Address Line 2" {...bindText("addressLine2")} />
                   <TextField label="City *" {...bindText("city")} />
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-[#606a78]">Account Status</label>
+                    <p
+                      className={`h-8 w-full rounded border border-[#d7dbe4] bg-[#f7f9fc] px-2 py-2 text-xs font-medium ${accountStatusView.className}`}
+                    >
+                      {accountStatusView.label}
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-[#606a78]">Account Activation Date</label>
+                    <p className="h-8 w-full rounded border border-[#d7dbe4] bg-[#f7f9fc] px-2 py-2 text-xs text-[#2b3340]">
+                      {accountActivationDateView}
+                    </p>
+                  </div>
                   <div className="space-y-1">
                     <SearchableSelect
                       id="state"
@@ -1568,21 +1640,28 @@ export function AssessorProfileForm() {
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-[#606a78]">
-                      Pancard Number <span className="text-[#d63f3f]">*</span>
+                      No. of years working in environmental sustainability facilitation services{" "}
+                      <span className="text-[#d63f3f]">*</span>
                     </label>
                     <input
                       value={form.pancardNumber}
                       onChange={(event) => {
                         const nextRaw = event.target.value;
-                        setField("pancardNumber", nextRaw);
-                        clearFieldError("pancardNumber");
+                        const hasInvalidChars = /[^\d]/.test(nextRaw);
+                        const sanitized = nextRaw.replaceAll(/[^\d]/g, "");
+                        setField("pancardNumber", sanitized);
                         if (pancardTimerRef.current !== null) {
                           globalThis.window?.clearTimeout(pancardTimerRef.current);
                           pancardTimerRef.current = null;
                         }
+                        if (hasInvalidChars) {
+                          setFieldErrors((prev) => ({ ...prev, pancardNumber: "Only numbers are allowed." }));
+                          return;
+                        }
+                        clearFieldError("pancardNumber");
                         pancardTimerRef.current =
                           globalThis.window?.setTimeout(() => {
-                            const msg = validatePanInline(nextRaw);
+                            const msg = validateYearsInline(sanitized);
                             setFieldErrors((prev) => {
                               if (!msg) {
                                 if (!prev.pancardNumber) return prev;
@@ -1596,9 +1675,9 @@ export function AssessorProfileForm() {
                           }, 150) ?? null;
                       }}
                       onBlur={() => {
-                        const normalized = form.pancardNumber.trim().toUpperCase();
+                        const normalized = form.pancardNumber.trim();
                         setField("pancardNumber", normalized);
-                        const msg = validatePanInline(normalized);
+                        const msg = validateYearsInline(normalized);
                         if (msg) {
                           setFieldErrors((prev) => ({ ...prev, pancardNumber: msg }));
                         }
@@ -1615,33 +1694,106 @@ export function AssessorProfileForm() {
                       <p className="text-xs text-[#c62828]">{fieldErrors.pancardNumber}</p>
                     ) : null}
                   </div>
+                </div>
+
+                <div className="mt-5 lg:col-start-2">
+                  <h4 className="mb-3 text-sm font-semibold text-[#2f3a46]">Professional Details</h4>
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                   <div className="space-y-1">
-                    <SearchableSelect
-                      id="assessor-grade"
-                      label="Facilitator Grade *"
-                      required
+                    <label className="text-xs font-medium text-[#606a78]">
+                      Educational Qualification <span className="text-[#d63f3f]">*</span>
+                    </label>
+                    <input
                       value={form.assessorGrade}
-                      onChange={(next) => {
+                      onChange={(event) => {
+                        const next = event.target.value;
                         setField("assessorGrade", next);
                         clearFieldError("assessorGrade");
+                        if (educationalQualificationTimerRef.current !== null) {
+                          globalThis.window?.clearTimeout(educationalQualificationTimerRef.current);
+                          educationalQualificationTimerRef.current = null;
+                        }
+                        educationalQualificationTimerRef.current =
+                          globalThis.window?.setTimeout(() => {
+                            const msg = validateEducationalQualificationInline(next);
+                            setFieldErrors((prev) => {
+                              if (!msg) {
+                                if (!prev.assessorGrade) return prev;
+                                const copy = { ...prev };
+                                delete copy.assessorGrade;
+                                return copy;
+                              }
+                              return { ...prev, assessorGrade: msg };
+                            });
+                            educationalQualificationTimerRef.current = null;
+                          }, 150) ?? null;
                       }}
-                      options={assessorGrades.map((g) => ({ value: g, label: g }))}
-                      placeholder="Select Grade"
+                      onBlur={() => {
+                        const normalized = form.assessorGrade.trim();
+                        setField("assessorGrade", normalized);
+                        const msg = validateEducationalQualificationInline(normalized);
+                        if (msg) {
+                          setFieldErrors((prev) => ({ ...prev, assessorGrade: msg }));
+                        }
+                      }}
                       disabled={profileLocked}
-                      error={fieldErrors.assessorGrade || assessorGradesError}
+                      className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
+                        fieldErrors.assessorGrade
+                          ? "border-[#c62828] focus:border-[#c62828] focus:ring-[#f8d7da]"
+                          : "border-[#d7dbe4] focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
+                      }`}
+                      aria-invalid={fieldErrors.assessorGrade ? true : undefined}
                     />
+                    {fieldErrors.assessorGrade ? (
+                      <p className="text-xs text-[#c62828]">{fieldErrors.assessorGrade}</p>
+                    ) : null}
                   </div>
                   <div className="space-y-1">
                     <label htmlFor="enrollment-date" className="text-xs font-medium text-[#606a78]">
-                      Enrollment Date <span className="text-[#d63f3f]">*</span>
+                      Total no. of Years of Professional Experience{" "}
+                      <span className="text-[#d63f3f]">*</span>
                     </label>
                     <input
                       id="enrollment-date"
-                      type="date"
+                      type="text"
                       value={form.enrollmentDate}
+                      placeholder="Enter total years"
                       onChange={(event) => {
-                        setField("enrollmentDate", event.target.value);
+                        const nextRaw = event.target.value;
+                        const hasInvalidChars = /[^\d]/.test(nextRaw);
+                        const sanitized = nextRaw.replaceAll(/[^\d]/g, "");
+                        setField("enrollmentDate", sanitized);
+                        if (enrollmentTimerRef.current !== null) {
+                          globalThis.window?.clearTimeout(enrollmentTimerRef.current);
+                          enrollmentTimerRef.current = null;
+                        }
+                        if (hasInvalidChars) {
+                          setFieldErrors((prev) => ({ ...prev, enrollmentDate: "Only numbers are allowed." }));
+                          return;
+                        }
                         clearFieldError("enrollmentDate");
+                        enrollmentTimerRef.current =
+                          globalThis.window?.setTimeout(() => {
+                            const msg = validateYearsInline(sanitized);
+                            setFieldErrors((prev) => {
+                              if (!msg) {
+                                if (!prev.enrollmentDate) return prev;
+                                const copy = { ...prev };
+                                delete copy.enrollmentDate;
+                                return copy;
+                              }
+                              return { ...prev, enrollmentDate: msg };
+                            });
+                            enrollmentTimerRef.current = null;
+                          }, 150) ?? null;
+                      }}
+                      onBlur={() => {
+                        const normalized = form.enrollmentDate.trim();
+                        setField("enrollmentDate", normalized);
+                        const msg = validateYearsInline(normalized);
+                        if (msg) {
+                          setFieldErrors((prev) => ({ ...prev, enrollmentDate: msg }));
+                        }
                       }}
                       className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
                         fieldErrors.enrollmentDate
@@ -1655,339 +1807,206 @@ export function AssessorProfileForm() {
                     ) : null}
                   </div>
                   <div className="space-y-1">
-                    <p className="text-xs font-medium text-[#606a78]">
-                      Lead Facilitator <span className="text-[#d63f3f]">*</span>
-                    </p>
-                    <div
-                      className={`flex items-center gap-5 text-xs ${
-                        fieldErrors.leadAssessor ? "text-[#c62828]" : "text-[#495261]"
+                    <label className="text-xs font-medium text-[#606a78]">
+                      Additional Professional Qualification/Certifications{" "}
+                      <span className="text-[#d63f3f]">*</span>
+                    </label>
+                    <input
+                      value={form.leadAssessor}
+                      onChange={(event) => {
+                        const next = event.target.value;
+                        setField("leadAssessor", next);
+                        clearFieldError("leadAssessor");
+                        if (qualificationTimerRef.current !== null) {
+                          globalThis.window?.clearTimeout(qualificationTimerRef.current);
+                          qualificationTimerRef.current = null;
+                        }
+                        qualificationTimerRef.current =
+                          globalThis.window?.setTimeout(() => {
+                            const msg = validateQualificationInline(next);
+                            setFieldErrors((prev) => {
+                              if (!msg) {
+                                if (!prev.leadAssessor) return prev;
+                                const copy = { ...prev };
+                                delete copy.leadAssessor;
+                                return copy;
+                              }
+                              return { ...prev, leadAssessor: msg };
+                            });
+                            qualificationTimerRef.current = null;
+                          }, 150) ?? null;
+                      }}
+                      onBlur={() => {
+                        const normalized = form.leadAssessor.trim();
+                        setField("leadAssessor", normalized);
+                        const msg = validateQualificationInline(normalized);
+                        if (msg) {
+                          setFieldErrors((prev) => ({ ...prev, leadAssessor: msg }));
+                        }
+                      }}
+                      disabled={profileLocked}
+                      className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
+                        fieldErrors.leadAssessor
+                          ? "border-[#c62828] focus:border-[#c62828] focus:ring-[#f8d7da]"
+                          : "border-[#d7dbe4] focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
                       }`}
-                    >
-                      <label className="flex items-center gap-1">
-                        <input
-                          type="radio"
-                          name="leadAssessor"
-                          checked={form.leadAssessor === "1"}
-                          onChange={() => {
-                            setField("leadAssessor", "1");
-                            clearFieldError("leadAssessor");
-                          }}
-                          disabled={profileLocked}
-                        />
-                        <span>Yes</span>
-                      </label>
-                      <label className="flex items-center gap-1">
-                        <input
-                          type="radio"
-                          name="leadAssessor"
-                          checked={form.leadAssessor === "0"}
-                          onChange={() => {
-                            setField("leadAssessor", "0");
-                            clearFieldError("leadAssessor");
-                          }}
-                          disabled={profileLocked}
-                        />
-                        <span>No</span>
-                      </label>
-                    </div>
+                      aria-invalid={fieldErrors.leadAssessor ? true : undefined}
+                    />
                     {fieldErrors.leadAssessor ? (
                       <p className="text-xs text-[#c62828]">{fieldErrors.leadAssessor}</p>
                     ) : null}
                   </div>
                   <div className="space-y-1">
-                    <p className="text-xs font-medium text-[#606a78]">
-                      GST <span className="text-[#d63f3f]">*</span>
-                    </p>
-                    <div className="flex items-center gap-5 text-xs text-[#495261]">
-                      <label className="flex items-center gap-1">
-                        <input
-                          type="radio"
-                          name="gst"
-                          checked={form.gstYes}
-                          onChange={() => {
-                            setField("gstYes", true);
-                            clearFieldError("gstNumber");
-                          }}
-                        />
-                        <span>Yes</span>
-                      </label>
-                      <label className="flex items-center gap-1">
-                        <input
-                          type="radio"
-                          name="gst"
-                          checked={!form.gstYes}
-                          onChange={() => {
-                            setField("gstYes", false);
-                            clearFieldError("gstNumber");
-                          }}
-                        />
-                        <span>No</span>
-                      </label>
-                    </div>
+                    <label className="text-xs font-medium text-[#606a78]">
+                      Areas of Specialization <span className="text-[#d63f3f]">*</span>
+                    </label>
+                    <input
+                      value={form.gstNumber}
+                      onChange={(event) => {
+                        const next = event.target.value;
+                        setField("gstNumber", next);
+                        clearFieldError("gstNumber");
+                        if (specializationTimerRef.current !== null) {
+                          globalThis.window?.clearTimeout(specializationTimerRef.current);
+                          specializationTimerRef.current = null;
+                        }
+                        specializationTimerRef.current =
+                          globalThis.window?.setTimeout(() => {
+                            const msg = validateSpecializationInline(next);
+                            setFieldErrors((prev) => {
+                              if (!msg) {
+                                if (!prev.gstNumber) return prev;
+                                const copy = { ...prev };
+                                delete copy.gstNumber;
+                                return copy;
+                              }
+                              return { ...prev, gstNumber: msg };
+                            });
+                            specializationTimerRef.current = null;
+                          }, 150) ?? null;
+                      }}
+                      onBlur={() => {
+                        const normalized = form.gstNumber.trim();
+                        setField("gstNumber", normalized);
+                        const msg = validateSpecializationInline(normalized);
+                        if (msg) {
+                          setFieldErrors((prev) => ({ ...prev, gstNumber: msg }));
+                        }
+                      }}
+                      disabled={profileLocked}
+                      className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
+                        fieldErrors.gstNumber
+                          ? "border-[#c62828] focus:border-[#c62828] focus:ring-[#f8d7da]"
+                          : "border-[#d7dbe4] focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
+                      }`}
+                      aria-invalid={fieldErrors.gstNumber ? true : undefined}
+                    />
+                    {fieldErrors.gstNumber ? (
+                      <p className="text-xs text-[#c62828]">{fieldErrors.gstNumber}</p>
+                    ) : null}
                   </div>
-                  {form.gstYes ? <TextField label="GST number *" {...bindText("gstNumber")} /> : null}
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-[#606a78]">Company website details</label>
+                    <input
+                      value={form.companyWebsiteDetails}
+                      onChange={(event) => {
+                        const next = event.target.value;
+                        setField("companyWebsiteDetails", next);
+                        clearFieldError("companyWebsiteDetails");
+                        if (companyWebsiteTimerRef.current !== null) {
+                          globalThis.window?.clearTimeout(companyWebsiteTimerRef.current);
+                          companyWebsiteTimerRef.current = null;
+                        }
+                        companyWebsiteTimerRef.current =
+                          globalThis.window?.setTimeout(() => {
+                            const msg = validateUrlInline(next, "Company website details");
+                            setFieldErrors((prev) => {
+                              if (!msg) {
+                                if (!prev.companyWebsiteDetails) return prev;
+                                const copy = { ...prev };
+                                delete copy.companyWebsiteDetails;
+                                return copy;
+                              }
+                              return { ...prev, companyWebsiteDetails: msg };
+                            });
+                            companyWebsiteTimerRef.current = null;
+                          }, 150) ?? null;
+                      }}
+                      onBlur={() => {
+                        const normalized = form.companyWebsiteDetails.trim();
+                        setField("companyWebsiteDetails", normalized);
+                        const msg = validateUrlInline(normalized, "Company website details");
+                        if (msg) {
+                          setFieldErrors((prev) => ({ ...prev, companyWebsiteDetails: msg }));
+                        }
+                      }}
+                      disabled={profileLocked}
+                      className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
+                        fieldErrors.companyWebsiteDetails
+                          ? "border-[#c62828] focus:border-[#c62828] focus:ring-[#f8d7da]"
+                          : "border-[#d7dbe4] focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
+                      }`}
+                      aria-invalid={fieldErrors.companyWebsiteDetails ? true : undefined}
+                    />
+                    {fieldErrors.companyWebsiteDetails ? (
+                      <p className="text-xs text-[#c62828]">{fieldErrors.companyWebsiteDetails}</p>
+                    ) : null}
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-[#606a78]">LinkedIn Profile</label>
+                    <input
+                      value={form.linkedinProfile}
+                      onChange={(event) => {
+                        const next = event.target.value;
+                        setField("linkedinProfile", next);
+                        clearFieldError("linkedinProfile");
+                        if (linkedinTimerRef.current !== null) {
+                          globalThis.window?.clearTimeout(linkedinTimerRef.current);
+                          linkedinTimerRef.current = null;
+                        }
+                        linkedinTimerRef.current =
+                          globalThis.window?.setTimeout(() => {
+                            const msg = validateUrlInline(next, "LinkedIn Profile");
+                            setFieldErrors((prev) => {
+                              if (!msg) {
+                                if (!prev.linkedinProfile) return prev;
+                                const copy = { ...prev };
+                                delete copy.linkedinProfile;
+                                return copy;
+                              }
+                              return { ...prev, linkedinProfile: msg };
+                            });
+                            linkedinTimerRef.current = null;
+                          }, 150) ?? null;
+                      }}
+                      onBlur={() => {
+                        const normalized = form.linkedinProfile.trim();
+                        setField("linkedinProfile", normalized);
+                        const msg = validateUrlInline(normalized, "LinkedIn Profile");
+                        if (msg) {
+                          setFieldErrors((prev) => ({ ...prev, linkedinProfile: msg }));
+                        }
+                      }}
+                      disabled={profileLocked}
+                      className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
+                        fieldErrors.linkedinProfile
+                          ? "border-[#c62828] focus:border-[#c62828] focus:ring-[#f8d7da]"
+                          : "border-[#d7dbe4] focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
+                      }`}
+                      aria-invalid={fieldErrors.linkedinProfile ? true : undefined}
+                    />
+                    {fieldErrors.linkedinProfile ? (
+                      <p className="text-xs text-[#c62828]">{fieldErrors.linkedinProfile}</p>
+                    ) : null}
+                  </div>
+                  </div>
                 </div>
               </div>
             </div>
 
-            <div>
-              <p className="mb-2 text-xs font-semibold text-[#4f5a68]">Emergency Contact Details</p>
-              <div className="grid gap-3 md:grid-cols-3">
-                <TextField label="Contact Name *" {...bindText("emergencyContactName")} />
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-[#606a78]">
-                    Mobile Number <span className="text-[#d63f3f]">*</span>
-                  </label>
-                  <input
-                    value={form.emergencyMobile}
-                    onChange={(event) => {
-                      const next = event.target.value;
-                      setField("emergencyMobile", next);
-                      if (emergencyMobileTimerRef.current !== null) {
-                        globalThis.window?.clearTimeout(emergencyMobileTimerRef.current);
-                        emergencyMobileTimerRef.current = null;
-                      }
-                      emergencyMobileTimerRef.current =
-                        globalThis.window?.setTimeout(() => {
-                          const msg = validateMobileInline(next, "Mobile");
-                          setFieldErrors((prev) => {
-                            if (!msg) {
-                              if (!prev.emergencyMobile) return prev;
-                              const copy = { ...prev };
-                              delete copy.emergencyMobile;
-                              return copy;
-                            }
-                            return { ...prev, emergencyMobile: msg };
-                          });
-                          emergencyMobileTimerRef.current = null;
-                        }, 150) ?? null;
-                    }}
-                    onBlur={() => {
-                      const msg = validateMobileInline(form.emergencyMobile, "Mobile");
-                      if (msg) {
-                        setFieldErrors((prev) => ({ ...prev, emergencyMobile: msg }));
-                      }
-                    }}
-                    disabled={profileLocked}
-                    className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
-                      fieldErrors.emergencyMobile
-                        ? "border-[#c62828] focus:border-[#c62828] focus:ring-[#f8d7da]"
-                        : "border-[#d7dbe4] focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
-                    }`}
-                    aria-invalid={fieldErrors.emergencyMobile ? true : undefined}
-                  />
-                  {fieldErrors.emergencyMobile ? (
-                    <p className="text-xs text-[#c62828]">{fieldErrors.emergencyMobile}</p>
-                  ) : null}
-                </div>
-                <TextField label="Address Line 1 *" {...bindText("emergencyAddressLine1")} />
-                <TextField label="Address Line 2" {...bindText("emergencyAddressLine2")} />
-                <TextField label="City *" {...bindText("emergencyCity")} />
-                <div className="space-y-1">
-                  <SearchableSelect
-                    id="emergency-state"
-                    label="State *"
-                    required
-                    value={form.emergencyState}
-                    onChange={(next) => {
-                      setField("emergencyState", next);
-                      clearFieldError("emergencyState");
-                    }}
-                    options={stateOptions.map((opt) => ({ value: opt.label, label: opt.label }))}
-                    placeholder="Select State"
-                    disabled={profileLocked}
-                    error={fieldErrors.emergencyState || stateOptionsError}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-[#606a78]">
-                    Pincode <span className="text-[#d63f3f]">*</span>
-                  </label>
-                  <input
-                    value={form.emergencyPincode}
-                    onChange={(event) => {
-                      const next = event.target.value;
-                      setField("emergencyPincode", next);
-                      if (emergencyPincodeTimerRef.current !== null) {
-                        globalThis.window?.clearTimeout(emergencyPincodeTimerRef.current);
-                        emergencyPincodeTimerRef.current = null;
-                      }
-                      emergencyPincodeTimerRef.current =
-                        globalThis.window?.setTimeout(() => {
-                          const msg = validatePincodeInline(next, "Emergency pincode");
-                          setFieldErrors((prev) => {
-                            if (!msg) {
-                              if (!prev.emergencyPincode) return prev;
-                              const copy = { ...prev };
-                              delete copy.emergencyPincode;
-                              return copy;
-                            }
-                            return { ...prev, emergencyPincode: msg };
-                          });
-                          emergencyPincodeTimerRef.current = null;
-                        }, 120) ?? null;
-                    }}
-                    onBlur={() => {
-                      const msg = validatePincodeInline(form.emergencyPincode, "Emergency pincode");
-                      if (msg) {
-                        setFieldErrors((prev) => ({ ...prev, emergencyPincode: msg }));
-                      }
-                    }}
-                    disabled={profileLocked}
-                    className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
-                      fieldErrors.emergencyPincode
-                        ? "border-[#c62828] focus:border-[#c62828] focus:ring-[#f8d7da]"
-                        : "border-[#d7dbe4] focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
-                    }`}
-                    aria-invalid={fieldErrors.emergencyPincode ? true : undefined}
-                  />
-                  {fieldErrors.emergencyPincode ? (
-                    <p className="text-xs text-[#c62828]">{fieldErrors.emergencyPincode}</p>
-                  ) : null}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap justify-end gap-2">
-              {editMode ? (
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={handleCancel}
-                  className="rounded border border-[#d5dae3] bg-white px-4 py-1.5 text-xs text-[#667083] hover:bg-[#f7f9fc] disabled:opacity-60"
-                >
-                  Cancel
-                </button>
-              ) : null}
-              {showProfileStepActions ? (
-                <button
-                  type="button"
-                  disabled={saving || profileLocked}
-                  onClick={() => {
-                    void saveAndContinue();
-                  }}
-                  className={`${profileLocked ? "hidden" : ""} rounded bg-[var(--gc-primary)] px-4 py-1.5 text-xs text-white hover:bg-[var(--gc-primary-hover)] disabled:opacity-60`}
-                >
-                  {saving && savingKind === "draft"
-                    ? "Saving…"
-                    : "Save & Continue"}
-                </button>
-              ) : null}
-            </div>
-          </>
-        ) : (
-          <>
+            
+          
             <div className="space-y-4">
-              <div className="rounded-lg border border-[#e4e9f1] bg-[#fbfcff] p-4">
-                <div className="mb-3 flex items-center justify-between">
-                  <p className="text-sm font-semibold text-[#2f3a46]">Bank Details</p>
-                  <p className="text-xs text-[#7a8798]">Fill account information before final submit.</p>
-                </div>
-                <div className="grid gap-3 md:grid-cols-3">
-                <div className="space-y-1">
-                  <label htmlFor="ifsc-code" className="text-xs font-medium text-[#606a78]">
-                    IFSC Code <span className="text-[#d63f3f]">*</span>
-                  </label>
-                  <input
-                    id="ifsc-code"
-                    value={form.ifscCode}
-                    onChange={(event) => {
-                      const next = event.target.value.toUpperCase();
-                      setField("ifscCode", next);
-                      clearFieldError("ifscCode");
-                      setIfscLookupError("");
-
-                      const normalized = next.trim().toUpperCase();
-                      if (ifscLookupTimerRef.current !== null) {
-                        globalThis.window?.clearTimeout(ifscLookupTimerRef.current);
-                        ifscLookupTimerRef.current = null;
-                      }
-                      if (!normalized) {
-                        setIfscLookupLoading(false);
-                        lastIfscLookupRef.current = "";
-                        return;
-                      }
-                      // Trigger lookup immediately once IFSC becomes valid (11 chars), with small debounce.
-                      ifscLookupTimerRef.current =
-                        globalThis.window?.setTimeout(() => {
-                          void runIfscLookup(normalized);
-                          ifscLookupTimerRef.current = null;
-                        }, 250) ?? null;
-                    }}
-                    onBlur={() => {
-                      const normalized = form.ifscCode.trim().toUpperCase();
-                      setField("ifscCode", normalized);
-                      if (ifscLookupTimerRef.current !== null) {
-                        globalThis.window?.clearTimeout(ifscLookupTimerRef.current);
-                        ifscLookupTimerRef.current = null;
-                      }
-                      void runIfscLookup(normalized);
-                    }}
-                    className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
-                      fieldErrors.ifscCode || ifscLookupError
-                        ? "border-[#c62828] focus:border-[#c62828] focus:ring-[#f8d7da]"
-                        : "border-[#d7dbe4] focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
-                    }`}
-                    aria-invalid={fieldErrors.ifscCode || ifscLookupError ? true : undefined}
-                  />
-                  {ifscLookupLoading ? (
-                    <p className="text-xs text-[#5a6b63]">Fetching bank details...</p>
-                  ) : null}
-                  {ifscLookupError ? <p className="text-xs text-[#c62828]">{ifscLookupError}</p> : null}
-                  {fieldErrors.ifscCode ? <p className="text-xs text-[#c62828]">{fieldErrors.ifscCode}</p> : null}
-                </div>
-                <TextField label="Bank Name *" {...bindText("bankName")} />
-                <TextField label="Branch Name" {...bindText("branchName")} />
-                <div className="space-y-1">
-                  <label htmlFor="account-number" className="text-xs font-medium text-[#606a78]">
-                    Account Number <span className="text-[#d63f3f]">*</span>
-                  </label>
-                  <input
-                    id="account-number"
-                    value={form.accountNumber}
-                    onChange={(event) => {
-                      const next = event.target.value;
-                      setField("accountNumber", next);
-                      if (accountNumberTimerRef.current !== null) {
-                        globalThis.window?.clearTimeout(accountNumberTimerRef.current);
-                        accountNumberTimerRef.current = null;
-                      }
-                      // Validate while typing with small debounce for immediate feedback.
-                      accountNumberTimerRef.current =
-                        globalThis.window?.setTimeout(() => {
-                          const msg = validateAccountNumberInline(next);
-                          setFieldErrors((prev) => {
-                            if (!msg) {
-                              if (!prev.accountNumber) return prev;
-                              const copy = { ...prev };
-                              delete copy.accountNumber;
-                              return copy;
-                            }
-                            return { ...prev, accountNumber: msg };
-                          });
-                          accountNumberTimerRef.current = null;
-                        }, 150) ?? null;
-                    }}
-                    onBlur={() => {
-                      const msg = validateAccountNumberInline(form.accountNumber);
-                      if (msg) {
-                        setFieldErrors((prev) => ({ ...prev, accountNumber: msg }));
-                      }
-                    }}
-                    disabled={profileLocked}
-                    className={`h-8 w-full rounded border bg-transparent px-2 text-xs text-[#2b3340] outline-none focus:ring-1 ${
-                      fieldErrors.accountNumber
-                        ? "border-[#c62828] focus:border-[#c62828] focus:ring-[#f8d7da]"
-                        : "border-[#d7dbe4] focus:border-[var(--gc-focus)] focus:ring-[var(--gc-focus-ring)]"
-                    }`}
-                    aria-invalid={fieldErrors.accountNumber ? true : undefined}
-                  />
-                  {fieldErrors.accountNumber ? (
-                    <p className="text-xs text-[#c62828]">{fieldErrors.accountNumber}</p>
-                  ) : null}
-                  </div>
-                </div>
-              </div>
               <div className="rounded-lg border border-[#e4e9f1] bg-white p-4">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <div>
@@ -1999,11 +2018,16 @@ export function AssessorProfileForm() {
                     </p>
                   </div>
                 </div>
-                <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-3">
                     {DOCUMENT_ROWS.map((row, index) => {
                       const docKey = row.key as DocStatusFileKey;
                       const serverName = serverDocNames[docKey]?.trim() ?? "";
-                      const effectiveStatus = effectiveDocRowStatus(docKey, docStatuses, serverDocNames);
+                      const effectiveStatus = effectiveDocRowStatus(
+                        docKey,
+                        docStatuses,
+                        serverDocNames,
+                        approvalStatus,
+                      );
                       const selected = files[row.key] ?? null;
                       const hasSelected = Boolean(selected);
                       const isLocalReuploadForRejected = hasSelected && docStatuses[docKey] === "2";
@@ -2011,10 +2035,9 @@ export function AssessorProfileForm() {
                       const badgeForDisplay = docStatusBadge(statusForDisplay);
                       const hasServer = effectiveStatus !== "0";
                       const rejectedDocNeedsReupload = docStatuses[docKey] === "2";
-                      const canUploadDoc =
-                        approvalStatus === "Rejected"
-                          ? editMode && rejectedDocNeedsReupload
-                          : !profileLocked && (!hasServer || rejectedDocNeedsReupload);
+                      const canUploadDoc = rejectedDocNeedsReupload
+                        ? editMode
+                        : !profileLocked && !hasServer;
                       let fileLabel = "No file selected";
                       if (hasSelected) {
                         fileLabel = fileNameOrDash(selected);
@@ -2023,128 +2046,157 @@ export function AssessorProfileForm() {
                       }
 
                       return (
-                        <div
-                          key={row.key}
-                          className={`rounded-md border px-3 py-3 ${
-                            fieldErrors[row.key] ? "border-[#f0caca] bg-[#fff8f8]" : "border-[#e7ecf3] bg-white"
-                          }`}
-                        >
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="text-xs font-medium text-[#2f3a46]">
-                                {index + 1}. {row.label} <span className="text-[#d63f3f]">*</span>
-                              </p>
-                              {badgeForDisplay ? (
-                                <span
-                                  className={`inline-flex rounded px-2 py-0.5 text-[11px] font-semibold ${badgeForDisplay.className}`}
-                                >
-                                  {badgeForDisplay.label}
-                                </span>
-                              ) : null}
-                            </div>
-                            <p className="mt-1 truncate text-xs text-[#5f6876]">
-                              {fileLabel}
-                            </p>
-                            {docRemarks[docKey]?.trim() && !isLocalReuploadForRejected ? (
-                              <p
-                                className={`mt-1 text-xs ${
-                                  statusForDisplay === "2" ? "text-[#a94442]" : "text-[#5f6876]"
-                                }`}
+                        <div key={row.key} className="rounded-md border border-[#e7ecf3] bg-white px-3 py-3">
+                          <p className="text-xs font-medium text-[#2f3a46]">
+                            {index + 1}. {row.label} <span className="text-[#d63f3f]">*</span>
+                          </p>
+
+                          <div className="mt-2 flex items-center gap-2">
+                            <input
+                              ref={(node) => {
+                                fileInputsRef.current[row.key] = node;
+                              }}
+                              type="file"
+                              accept="application/pdf,image/jpg,image/jpeg,image/png"
+                              className="hidden"
+                              onChange={(event) => {
+                                const file = event.target.files?.[0] ?? null;
+                                clearFieldError(row.key);
+                                if (!file) {
+                                  return;
+                                }
+                                const fileError = getDocumentFileValidationError(file);
+                                if (fileError) {
+                                  setFieldErrors((prev) => ({ ...prev, [row.key]: fileError }));
+                                  event.target.value = "";
+                                  return;
+                                }
+                                setFiles((previous) => ({ ...previous, [row.key]: file }));
+                                setDocStatuses((previous) => ({ ...previous, [docKey]: "3" }));
+                                setDocRemarks((previous) => ({ ...previous, [docKey]: "" }));
+                              }}
+                            />
+                            <input
+                              readOnly
+                              value={canUploadDoc ? (hasSelected ? fileLabel : "") : fileLabel}
+                              placeholder="Choose file"
+                              className="h-7 w-full rounded border border-[#d5dbe6] bg-white px-2 text-xs text-[#5f6876]"
+                            />
+                            {canUploadDoc ? (
+                              <button
+                                type="button"
+                                className="h-7 rounded bg-[#2f6ea5] px-3 text-xs text-white hover:bg-[#285d8a]"
+                                onClick={() => fileInputsRef.current[row.key]?.click()}
                               >
-                                Remarks: {docRemarks[docKey]}
-                              </p>
-                            ) : null}
-                            {fieldErrors[row.key] ? (
-                              <p className="mt-1 text-xs text-[#c62828]">{fieldErrors[row.key]}</p>
-                            ) : null}
-                            {approvalStatus === "Rejected" && rejectedDocNeedsReupload && !editMode ? (
-                              <p className="mt-1 text-xs text-[#7a8798]">
-                                Click Update to re-upload this rejected document.
-                              </p>
+                                Browse
+                              </button>
                             ) : null}
                           </div>
 
-                          <div className="mt-3 flex flex-shrink-0 items-center justify-start gap-2">
-                            {canUploadDoc ? (
+                          <div className="mt-1 flex items-center gap-2">
+                            <p className="truncate text-[11px] text-[#5f6876]">
+                              <span className="font-medium">Uploaded File</span> {fileLabel}
+                            </p>
+                            {hasSelected ? (
                               <>
-                                <input
-                                  ref={(node) => {
-                                    fileInputsRef.current[row.key] = node;
-                                  }}
-                                  type="file"
-                                  accept="application/pdf,image/jpg,image/jpeg,image/png"
-                                  className="hidden"
-                                  onChange={(event) => {
-                                    const file = event.target.files?.[0] ?? null;
-                                    clearFieldError(row.key);
-                                    if (!file) {
-                                      return;
-                                    }
-                                    setFiles((previous) => ({ ...previous, [row.key]: file }));
-                                    // Once user re-uploads a rejected doc, reflect it as pending in UI
-                                    // and clear old rejection remark until fresh admin review.
-                                    setDocStatuses((previous) => ({ ...previous, [docKey]: "3" }));
-                                    setDocRemarks((previous) => ({ ...previous, [docKey]: "" }));
-                                  }}
-                                />
-                                <button
-                                  type="button"
-                                  className="rounded border border-[#cdd8e8] bg-white px-3 py-1 text-xs font-medium text-[#2f6ea5] hover:bg-[#f1f6ff]"
-                                  onClick={() => fileInputsRef.current[row.key]?.click()}
+                                <a
+                                  className="inline-flex h-6 w-6 items-center justify-center rounded border border-[#cdd8e8] bg-white text-[#2f6ea5] hover:bg-[#f1f6ff]"
+                                  href={URL.createObjectURL(selected)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  aria-label={`View ${row.label}`}
+                                  title="View"
                                 >
-                                  Upload
-                                </button>
+                                  <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" aria-hidden>
+                                    <path d="M1.8 10C3.9 6.6 6.6 4.9 10 4.9C13.4 4.9 16.1 6.6 18.2 10C16.1 13.4 13.4 15.1 10 15.1C6.6 15.1 3.9 13.4 1.8 10Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                    <circle cx="10" cy="10" r="2.2" fill="currentColor" />
+                                  </svg>
+                                </a>
+                                <a
+                                  className="inline-flex h-6 w-6 items-center justify-center rounded border border-[#cdd8e8] bg-white text-[#2f6ea5] hover:bg-[#f1f6ff]"
+                                  href={URL.createObjectURL(selected)}
+                                  download={selected.name}
+                                  aria-label={`Download ${row.label}`}
+                                  title="Download"
+                                >
+                                  <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" aria-hidden>
+                                    <path d="M10 3.5V11.5M10 11.5L13 8.5M10 11.5L7 8.5M4 13.5V15.5H16V13.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                  </svg>
+                                </a>
                               </>
                             ) : null}
-                            {hasSelected ? (
-                              <a
-                              className="inline-flex h-7 w-7 items-center justify-center rounded border border-[#cdd8e8] bg-white text-[#2f6ea5] hover:bg-[#f1f6ff]"
-                                href={URL.createObjectURL(selected!)}
-                                target="_blank"
-                                rel="noreferrer"
-                              aria-label={`View ${row.label}`}
-                              title="View"
-                              >
-                              <svg
-                                viewBox="0 0 20 20"
-                                fill="none"
-                                xmlns="http://www.w3.org/2000/svg"
-                                className="h-4 w-4"
-                                aria-hidden
-                              >
-                                <path
-                                  d="M1.8 10C3.9 6.6 6.6 4.9 10 4.9C13.4 4.9 16.1 6.6 18.2 10C16.1 13.4 13.4 15.1 10 15.1C6.6 15.1 3.9 13.4 1.8 10Z"
-                                  stroke="currentColor"
-                                  strokeWidth="1.5"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                                <circle cx="10" cy="10" r="2.2" fill="currentColor" />
-                              </svg>
-                              </a>
+                            {badgeForDisplay ? (
+                              <span className={`inline-flex rounded px-2 py-0.5 text-[11px] font-semibold ${badgeForDisplay.className}`}>
+                                {badgeForDisplay.label}
+                              </span>
                             ) : null}
                           </div>
+
+                          {docRemarks[docKey]?.trim() && !isLocalReuploadForRejected ? (
+                            <p className={`mt-1 text-xs ${statusForDisplay === "2" ? "text-[#a94442]" : "text-[#5f6876]"}`}>
+                              Remarks: {docRemarks[docKey]}
+                            </p>
+                          ) : null}
+                          {fieldErrors[row.key] ? (
+                            <p className="mt-1 text-xs text-[#c62828]">{fieldErrors[row.key]}</p>
+                          ) : null}
+                          {(approvalStatus === "Rejected" || hasRejectedDocs) &&
+                          rejectedDocNeedsReupload &&
+                          !editMode ? (
+                            <p className="mt-1 text-xs text-[#7a8798]">
+                              Click Update to re-upload this rejected document.
+                            </p>
+                          ) : null}
                         </div>
                       );
                     })}
                 </div>
+                <div className="mt-3">
+                  <label className="inline-flex items-start gap-2 text-xs text-[#495261]">
+                    <input
+                      type="checkbox"
+                      checked={form.declarationAccepted}
+                      onChange={(event) => {
+                        setField("declarationAccepted", event.target.checked);
+                        clearFieldError("declarationAccepted");
+                      }}
+                      disabled={profileLocked}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      I declare that the above facts are true to the best of my knowledge, and if proven wrong; I
+                      will not have any liability in this regard.
+                    </span>
+                  </label>
+                  {fieldErrors.declarationAccepted ? (
+                    <p className="mt-1 text-xs text-[#c62828]">{fieldErrors.declarationAccepted}</p>
+                  ) : null}
+                </div>
               </div>
             </div>
 
-            <div className="flex flex-wrap justify-end gap-2">
-              <button
-                type="button"
-                disabled={saving || profileLocked}
-                onClick={() => setShowFinalSubmitConfirm(true)}
-                className={`${profileLocked ? "hidden" : ""} rounded bg-[#2e6b4a] px-4 py-1.5 text-xs text-white hover:bg-[#255a3e] disabled:opacity-60`}
-              >
-                {saving && savingKind === "final"
-                  ? "Submitting…"
-                  : "Final submit"}
-              </button>
-            </div>
+            {showProfileStepActions ? (
+              <div className="flex flex-wrap justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={handleCancel}
+                  className="rounded border border-[#d5dae3] bg-white px-4 py-1.5 text-xs text-[#667083] hover:bg-[#f7f9fc] disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={saving || profileLocked}
+                  onClick={handleSaveClick}
+                  className={`${profileLocked ? "hidden" : ""} rounded bg-[var(--gc-primary)] px-4 py-1.5 text-xs text-white hover:bg-[var(--gc-primary-hover)] disabled:opacity-60`}
+                >
+                  {saving && savingKind === "final" ? "Submitting…" : "Save"}
+                </button>
+              </div>
+            ) : null}
           </>
-        )}
+        }
       </div>
 
       {showFinalSubmitConfirm ? (

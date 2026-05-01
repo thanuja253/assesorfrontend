@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { AuthApiError, forgotAssessorPassword } from "@/lib/auth-api";
+import { AuthApiError, forgotFacilitatorPassword } from "@/lib/auth-api";
 import { isValidEmailFormat } from "@/lib/validation";
 
 const recoverySteps = [
@@ -49,7 +49,7 @@ export default function AssessorForgotPasswordPage() {
 
     setIsSubmitting(true);
     try {
-      const result = await forgotAssessorPassword({ email: trimmed });
+      const result = await forgotFacilitatorPassword({ email: trimmed });
       setEmail("");
       if (globalThis.window) {
         globalThis.window.sessionStorage.setItem(

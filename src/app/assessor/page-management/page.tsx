@@ -207,6 +207,23 @@ function accountStatusText(row: AssessorProjectListItem): string {
   return "—";
 }
 
+function isMongoObjectId(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  return /^[a-f0-9]{24}$/i.test(value.trim());
+}
+
+function resolveQuickViewProjectId(row: AssessorProjectListItem): string {
+  const candidates = [
+    row.quickview_project_id,
+    row.id,
+    row.project_id,
+  ];
+  const valid = candidates.find((candidate) => isMongoObjectId(candidate));
+  if (valid) return String(valid).trim();
+  const fallback = candidates.find((candidate) => typeof candidate === "string" && candidate.trim());
+  return fallback ? String(fallback).trim() : "";
+}
+
 export default function AssessorProjectManagementPage() {
   const [draftFilters, setDraftFilters] = useState<FiltersState>(DEFAULT_FILTERS);
   const [appliedFilters, setAppliedFilters] = useState<FiltersState>(DEFAULT_FILTERS);
@@ -402,10 +419,13 @@ export default function AssessorProjectManagementPage() {
     );
   } else {
     tableContent = rows.map((row, idx) => (
+      (() => {
+        const quickViewProjectId = resolveQuickViewProjectId(row);
+        return (
       <tr key={`${row.id ?? row.quickview_project_id ?? row.project_id ?? "row"}-${idx}`}>
         <td className="px-3 py-2 text-[#445063]">{(page - 1) * pageSize + idx + 1}</td>
         <td className="px-3 py-2 text-[#2f3a46]">{row.company_id ?? "—"}</td>
-        <td className="px-3 py-2 text-[#2f3a46]">{row.project_id ?? "—"}</td>
+        <td className="px-3 py-2 text-[#2f3a46]">{(row.project_code ?? "").trim() || "—"}</td>
         <td className="px-3 py-2 text-[#2f3a46]">{row.name ?? "—"}</td>
         <td className="px-3 py-2 text-[#2f3a46]">{row.email ?? "—"}</td>
         <td className="px-3 py-2 text-[#2f3a46]">{row.mobile ?? "—"}</td>
@@ -415,11 +435,9 @@ export default function AssessorProjectManagementPage() {
           </span>
         </td>
         <td className="px-3 py-2">
-          {row.id ?? row.quickview_project_id ? (
+          {quickViewProjectId ? (
             <a
-              href={`/assessor/page-management/${encodeURIComponent(
-                row.id ?? row.quickview_project_id ?? "",
-              )}/quick-view`}
+              href={`/facilitator/page-management/${encodeURIComponent(quickViewProjectId)}/quick-view`}
               className="inline-flex h-6 w-6 items-center justify-center rounded border border-[#cfe1f4] bg-[#f4f9ff] text-xs text-[#3b79b3] hover:bg-[#e8f3ff]"
               title="Quick View"
               aria-label="Quick View"
@@ -431,6 +449,8 @@ export default function AssessorProjectManagementPage() {
           )}
         </td>
       </tr>
+        );
+      })()
     ));
   }
 
@@ -739,7 +759,7 @@ export default function AssessorProjectManagementPage() {
               <tr>
                 <th className="px-3 py-2">S.No</th>
                 <th className="px-3 py-2">Company ID</th>
-                <th className="px-3 py-2">Project ID</th>
+                <th className="px-3 py-2">Project Code</th>
                 <th className="px-3 py-2">Name</th>
                 <th className="px-3 py-2">Email</th>
                 <th className="px-3 py-2">Phone Number</th>

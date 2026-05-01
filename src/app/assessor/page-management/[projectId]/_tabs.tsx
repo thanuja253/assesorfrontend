@@ -13,6 +13,8 @@ type TabItem = {
 function TabIcon({ tabKey, active }: Readonly<{ tabKey: string; active: boolean }>): ReactNode {
   const iconPalette: Record<string, { active: string; idle: string }> = {
     "quick-view": { active: "#2563eb", idle: "#93c5fd" },
+    "registration-info": { active: "#0f766e", idle: "#99f6e4" },
+    "contract-document": { active: "#1d4ed8", idle: "#93c5fd" },
     "launch-training": { active: "#7c3aed", idle: "#c4b5fd" },
     expenses: { active: "#ea580c", idle: "#fdba74" },
     "assessment-checklist-documents": { active: "#0f766e", idle: "#99f6e4" },
@@ -40,6 +42,25 @@ function TabIcon({ tabKey, active }: Readonly<{ tabKey: string; active: boolean 
       <svg {...commonProps}>
         <path d="M1.5 10C3.6 6.4 6.4 4.6 10 4.6C13.6 4.6 16.4 6.4 18.5 10C16.4 13.6 13.6 15.4 10 15.4C6.4 15.4 3.6 13.6 1.5 10Z" {...strokeProps} />
         <circle cx="10" cy="10" r="2.3" fill={color} />
+      </svg>
+    );
+  }
+  if (tabKey === "registration-info") {
+    return (
+      <svg {...commonProps}>
+        <rect x="3.5" y="3.5" width="13" height="13" rx="2" {...strokeProps} />
+        <line x1="6.5" y1="7.2" x2="13.8" y2="7.2" {...strokeProps} />
+        <line x1="6.5" y1="10.1" x2="13.8" y2="10.1" {...strokeProps} />
+        <line x1="6.5" y1="13" x2="11.2" y2="13" {...strokeProps} />
+      </svg>
+    );
+  }
+  if (tabKey === "contract-document") {
+    return (
+      <svg {...commonProps}>
+        <path d="M6 2.5H12.8L16.5 6.2V16C16.5 16.8 15.8 17.5 15 17.5H6C5.2 17.5 4.5 16.8 4.5 16V4C4.5 3.2 5.2 2.5 6 2.5Z" {...strokeProps} />
+        <path d="M12.5 2.8V6.2H16.2" {...strokeProps} />
+        <line x1="7" y1="10" x2="14" y2="10" {...strokeProps} />
       </svg>
     );
   }

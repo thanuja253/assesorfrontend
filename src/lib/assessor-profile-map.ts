@@ -52,30 +52,38 @@ export function pickGstYes(source: Record<string, unknown>): boolean {
   return false;
 }
 
-function pickLeadAssessorFlag(source: Record<string, unknown>): string {
-  const keys = ["lead_assessor", "leadAssessor", "is_lead_assessor", "isLeadAssessor", "lead"];
+function pickDeclarationAccepted(source: Record<string, unknown>): boolean {
+  const keys = [
+    "declaration_accepted",
+    "declarationAccepted",
+    "consent_accepted",
+    "consentAccepted",
+  ];
   for (const key of keys) {
     const value = source[key];
     if (typeof value === "boolean") {
-      return value ? "1" : "0";
+      return value;
     }
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return value === 1 ? "1" : "0";
+    if (typeof value === "number") {
+      return value === 1;
     }
     if (typeof value === "string") {
       const lower = value.trim().toLowerCase();
-      if (lower === "1" || lower === "true" || lower === "yes" || lower === "y") {
-        return "1";
+      if (lower === "1" || lower === "true" || lower === "yes") {
+        return true;
       }
-      if (lower === "0" || lower === "false" || lower === "no" || lower === "n") {
-        return "0";
+      if (lower === "0" || lower === "false" || lower === "no") {
+        return false;
       }
     }
   }
-  return "";
+  return true;
 }
 
 export type AssessorProfileFormValues = {
+  consultantId: string;
+  accountStatus: string;
+  accountActivationDate: string;
   name: string;
   email: string;
   mobile: string;
@@ -91,7 +99,10 @@ export type AssessorProfileFormValues = {
   pincode: string;
   pancardNumber: string;
   gstNumber: string;
+  companyWebsiteDetails: string;
+  linkedinProfile: string;
   gstYes: boolean;
+  declarationAccepted: boolean;
   emergencyContactName: string;
   emergencyMobile: string;
   emergencyAddressLine1: string;
@@ -108,19 +119,37 @@ export type AssessorProfileFormValues = {
 export function mapServerProfileToFormValues(
   source: Record<string, unknown>,
 ): AssessorProfileFormValues {
-  const leadAssessor = pickLeadAssessorFlag(source);
   return {
+    consultantId: pickStr(source, ["consultant_id", "consultantId", "consultantid"]),
+    accountStatus: pickStr(source, ["account_status", "accountStatus", "status"]),
+    accountActivationDate: pickStr(source, [
+      "account_activation_date",
+      "accountActivationDate",
+      "account_Activation_date",
+      "accountActivatedDate",
+      "account_activation_datetime",
+      "accountActivationDatetime",
+      "account_activated_at",
+      "activated_at",
+      "activation_date",
+      "activationDate",
+      "created_at",
+      "createdAt",
+      "updated_at",
+      "updatedAt",
+    ]),
     name: pickStr(source, ["name", "fullName", "full_name"]),
     email: pickStr(source, ["email", "emailAddress", "email_address"]),
     mobile: pickStr(source, ["mobile", "mobileNumber", "mobile_number", "phone", "phoneNumber"]),
     industryCategory: pickStr(source, [
       "industryCategory",
       "industry_category",
+      "organization",
       "industry",
     ]),
-    enrollmentDate: pickStr(source, ["enrollment_date", "enrollmentDate"]),
-    leadAssessor: leadAssessor || pickStr(source, ["lead_assessor", "leadAssessor"]),
-    assessorGrade: pickStr(source, ["assessor_grade", "assessorGrade", "grade"]),
+    enrollmentDate: pickStr(source, ["enrollment_date", "enrollmentDate", "total_years_professional_experience"]),
+    leadAssessor: pickStr(source, ["additional_professional_qualification", "additionalProfessionalQualification"]),
+    assessorGrade: pickStr(source, ["assessor_grade", "assessorGrade", "grade", "educational_qualification"]),
     alternateMobile: pickStr(source, [
       "alternateMobile",
       "alternate_mobile",
@@ -143,9 +172,23 @@ export function mapServerProfileToFormValues(
       "panNumber",
       "pan_number",
       "pan",
+      "years_env_sustainability",
     ]),
-    gstNumber: pickStr(source, ["gstNumber", "gst_number", "gstnumber", "gst_no", "gstNo"]),
+    gstNumber: pickStr(source, ["gstNumber", "gst_number", "gstnumber", "gst_no", "gstNo", "areas_of_specialization"]),
+    companyWebsiteDetails: pickStr(source, [
+      "company_website_details",
+      "companyWebsiteDetails",
+      "website",
+      "website_url",
+    ]),
+    linkedinProfile: pickStr(source, [
+      "linkedin_profile",
+      "linkedinProfile",
+      "linkedin_url",
+      "linked_in_profile",
+    ]),
     gstYes: pickGstYes(source),
+    declarationAccepted: pickDeclarationAccepted(source),
     emergencyContactName: pickStr(source, [
       "emergencyContactName",
       "emergency_contact_name",

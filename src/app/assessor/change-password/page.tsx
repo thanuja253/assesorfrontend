@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { GreencoLogo } from "@/components/GreencoLogo";
-import { AuthApiError, changeAssessorPassword } from "@/lib/auth-api";
+import { AuthApiError, changeFacilitatorPassword } from "@/lib/auth-api";
 
 function EyeIcon({ open }: Readonly<{ open: boolean }>) {
   if (open) {
@@ -123,7 +123,7 @@ export default function AssessorChangePasswordPage() {
 
     setIsSubmitting(true);
     try {
-      const result = await changeAssessorPassword({
+      const result = await changeFacilitatorPassword({
         current_password: oldPassword,
         new_password: newPassword,
         confirmed: confirmPassword,

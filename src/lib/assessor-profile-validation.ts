@@ -123,6 +123,77 @@ export function isBranchNamePattern(value: string): boolean {
   return /^[a-zA-Z0-9\s]+$/.test(trimmed);
 }
 
+export function isQualificationCertificationPattern(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return true;
+  }
+  if (!/^[a-zA-Z0-9\s,./()&+-]+$/.test(trimmed)) {
+    return false;
+  }
+  return /[a-zA-Z]/.test(trimmed);
+}
+
+const EDUCATIONAL_QUALIFICATION_KEYWORDS = [
+  "bachelor",
+  "master",
+  "degree",
+  "diploma",
+  "phd",
+  "doctorate",
+  "b.tech",
+  "m.tech",
+  "btech",
+  "mtech",
+  "mba",
+  "bsc",
+  "msc",
+  "bcom",
+  "mcom",
+  "ba",
+  "ma",
+  "certification",
+  "graduate",
+  "post graduate",
+];
+
+const SPECIALIZATION_KEYWORDS = [
+  "environment",
+  "sustainability",
+  "esg",
+  "energy",
+  "waste",
+  "water",
+  "carbon",
+  "climate",
+  "audit",
+  "compliance",
+  "safety",
+  "ems",
+  "hse",
+];
+
+export function hasEducationalQualificationKeyword(value: string): boolean {
+  const lower = value.trim().toLowerCase();
+  return EDUCATIONAL_QUALIFICATION_KEYWORDS.some((keyword) => lower.includes(keyword));
+}
+
+export function isAreaSpecializationPattern(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return true;
+  }
+  if (!/^[a-zA-Z\s,./&+-]+$/.test(trimmed)) {
+    return false;
+  }
+  return /[a-zA-Z]/.test(trimmed);
+}
+
+export function hasSpecializationKeyword(value: string): boolean {
+  const lower = value.trim().toLowerCase();
+  return SPECIALIZATION_KEYWORDS.some((keyword) => lower.includes(keyword));
+}
+
 /** Letters and numbers only, no spaces (account / IFSC style). */
 export function isAlphanumericNoSpace(value: string): boolean {
   const trimmed = value.trim();
@@ -144,6 +215,19 @@ export function isPincodeDigits(value: string): boolean {
   return /^\d{6}$/.test(value.trim());
 }
 
+export function isValidHttpUrl(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return true;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export function isGstNumberPattern(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -153,13 +237,32 @@ export function isGstNumberPattern(value: string): boolean {
 }
 
 const DOC_ACCEPT = /\.(pdf|jpe?g|png)$/i;
+const DOC_MIME_TYPES = new Set(["application/pdf", "image/jpeg", "image/jpg", "image/png"]);
+const PROFILE_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/jpg", "image/png"]);
+const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 
 export function isAllowedProfileImageFile(file: File): boolean {
-  return /\.(jpe?g|png)$/i.test(file.name);
+  const hasValidExt = /\.(jpe?g|png)$/i.test(file.name);
+  const mime = file.type.trim().toLowerCase();
+  const hasValidMime = !mime || PROFILE_IMAGE_MIME_TYPES.has(mime);
+  return hasValidExt && hasValidMime;
 }
 
 export function isAllowedDocumentFile(file: File): boolean {
-  return DOC_ACCEPT.test(file.name);
+  const hasValidExt = DOC_ACCEPT.test(file.name);
+  const mime = file.type.trim().toLowerCase();
+  const hasValidMime = !mime || DOC_MIME_TYPES.has(mime);
+  return hasValidExt && hasValidMime;
+}
+
+export function getDocumentFileValidationError(file: File): string {
+  if (file.size > MAX_FILE_SIZE_BYTES) {
+    return "File size must be 10MB or less.";
+  }
+  if (!isAllowedDocumentFile(file)) {
+    return "Upload a valid document (PDF/JPG/JPEG/PNG).";
+  }
+  return "";
 }
 
 export type ProfileValidationContext = Readonly<{
@@ -252,10 +355,26 @@ export function validateAssessorProfile(
     requireText("addressLine1", "Address line 1", values.addressLine1);
     requireText("city", "City", values.city);
     requireText("pincode", "Pincode", values.pincode);
-    requireText("pancardNumber", "PAN card number", values.pancardNumber);
-    requireText("enrollmentDate", "Enrollment date", values.enrollmentDate);
-    requireText("leadAssessor", "Lead facilitator", values.leadAssessor);
-    requireText("assessorGrade", "Facilitator grade", values.assessorGrade);
+    requireText(
+      "pancardNumber",
+      "No. of years working in environmental sustainability facilitation services",
+      values.pancardNumber,
+    );
+    requireText(
+      "enrollmentDate",
+      "Total no. of years of professional experience",
+      values.enrollmentDate,
+    );
+    requireText(
+      "leadAssessor",
+      "Additional professional qualification/certifications",
+      values.leadAssessor,
+    );
+    requireText("assessorGrade", "Educational qualification", values.assessorGrade);
+    requireText("gstNumber", "Areas of specialization", values.gstNumber);
+    if (!values.declarationAccepted) {
+      setErr(errors, "declarationAccepted", "Please accept the declaration consent.");
+    }
 
     const a1 = values.addressLine1;
     if (a1.trim()) {
@@ -290,131 +409,75 @@ export function validateAssessorProfile(
       setErr(errors, "pincode", "Pincode must be exactly 6 digits.");
     }
 
-    const panRaw = values.pancardNumber.trim();
-    const panCompact = panRaw.replaceAll(" ", "");
-    if (panCompact) {
-      if (panCompact.length !== 10) {
-        setErr(errors, "pancardNumber", "PAN must be exactly 10 characters.");
-      } else if (!/^[a-zA-Z0-9]+$/.test(panCompact)) {
-        setErr(errors, "pancardNumber", "Please Enter a Valid PAN Card No");
+    if (values.pancardNumber.trim()) {
+      const numericYears = Number(values.pancardNumber.trim());
+      if (Number.isNaN(numericYears) || numericYears < 0 || numericYears > 99) {
+        setErr(errors, "pancardNumber", "Enter valid years between 0 and 99.");
       }
     }
 
-    if (values.gstYes) {
-      const gstn = values.gstNumber.trim();
-      if (!gstn) {
-        setErr(errors, "gstNumber", "GST number is required.");
-      } else if (!isGstNumberPattern(gstn)) {
-        setErr(errors, "gstNumber", "GST number must be alphanumeric and at most 15 characters.");
+    if (values.enrollmentDate.trim()) {
+      const numericYears = Number(values.enrollmentDate.trim());
+      if (Number.isNaN(numericYears) || numericYears < 0 || numericYears > 99) {
+        setErr(errors, "enrollmentDate", "Enter valid years between 0 and 99.");
       }
     }
 
-    requireText("emergencyContactName", "Emergency contact name", values.emergencyContactName);
-    requireText("emergencyMobile", "Emergency contact mobile", values.emergencyMobile);
-    requireText("emergencyAddressLine1", "Emergency address line 1", values.emergencyAddressLine1);
-    requireText("emergencyCity", "Emergency city", values.emergencyCity);
-    requireText("emergencyState", "Emergency state", values.emergencyState);
-    requireText("emergencyPincode", "Emergency pincode", values.emergencyPincode);
-
-    const emName = values.emergencyContactName;
-    if (emName.trim()) {
-      if (!isNotOnlySpaces(emName)) {
-        setErr(errors, "emergencyContactName", "Emergency contact name cannot be only spaces.");
-      } else if (!hasNoDoubleSpace(emName)) {
-        setErr(errors, "emergencyContactName", "Emergency contact name cannot contain consecutive spaces.");
-      } else if (emName.trim().length < 3 || emName.trim().length > 50) {
-        setErr(errors, "emergencyContactName", "Emergency contact name must be 3–50 characters.");
-      } else if (!isLettersAndSpacesOnly(emName)) {
-        setErr(errors, "emergencyContactName", "Emergency contact name may contain letters and spaces only.");
+    const qualification = values.leadAssessor.trim();
+    if (qualification) {
+      if (!isQualificationCertificationPattern(qualification)) {
+        setErr(
+          errors,
+          "leadAssessor",
+          "Enter valid qualification/certification details (letters, numbers and , . / ( ) & + - only).",
+        );
+      } else if (qualification.length < 3 || qualification.length > 120) {
+        setErr(errors, "leadAssessor", "Qualification/certification must be 3 to 120 characters.");
       }
     }
 
-    const emMobile = values.emergencyMobile.trim();
-    if (emMobile) {
-      if (!isDigitsOnly(emMobile) || emMobile.length !== 10 || !isIndianMobile(emMobile)) {
-        setErr(errors, "emergencyMobile", "Enter a valid 10-digit emergency mobile starting with 6–9.");
+    const educationalQualification = values.assessorGrade.trim();
+    if (educationalQualification) {
+      if (!isQualificationCertificationPattern(educationalQualification)) {
+        setErr(
+          errors,
+          "assessorGrade",
+          "Enter valid educational qualification (letters, numbers and , . / ( ) & + - only).",
+        );
+      } else if (educationalQualification.length < 2 || educationalQualification.length > 80) {
+        setErr(errors, "assessorGrade", "Educational qualification must be 2 to 80 characters.");
+      } else if (!hasEducationalQualificationKeyword(educationalQualification)) {
+        setErr(errors, "assessorGrade", "Enter a valid educational qualification.");
       }
     }
 
-    const emA1 = values.emergencyAddressLine1;
-    if (emA1.trim()) {
-      if (!hasNoDoubleSpace(emA1)) {
-        setErr(errors, "emergencyAddressLine1", "Emergency address line 1 cannot contain consecutive spaces.");
-      } else if (emA1.trim().length < 3) {
-        setErr(errors, "emergencyAddressLine1", "Emergency address line 1 must be at least 3 characters.");
+    const specialization = values.gstNumber.trim();
+    if (specialization) {
+      if (!isAreaSpecializationPattern(specialization)) {
+        setErr(
+          errors,
+          "gstNumber",
+          "Enter valid area(s) of specialization (letters and , . / & + - only).",
+        );
+      } else if (specialization.length < 2 || specialization.length > 120) {
+        setErr(errors, "gstNumber", "Area(s) of specialization must be 2 to 120 characters.");
+      } else if (!hasSpecializationKeyword(specialization)) {
+        setErr(errors, "gstNumber", "Enter a valid area of specialization.");
       }
     }
 
-    const emA2 = values.emergencyAddressLine2;
-    if (emA2.trim()) {
-      if (!hasNoDoubleSpace(emA2)) {
-        setErr(errors, "emergencyAddressLine2", "Emergency address line 2 cannot contain consecutive spaces.");
-      } else if (emA2.trim().length < 3) {
-        setErr(errors, "emergencyAddressLine2", "Emergency address line 2 must be at least 3 characters.");
-      }
+    if (values.companyWebsiteDetails.trim() && !isValidHttpUrl(values.companyWebsiteDetails)) {
+      setErr(errors, "companyWebsiteDetails", "Company website details must be a valid URL (http/https).");
     }
-
-    const emCity = values.emergencyCity;
-    if (emCity.trim()) {
-      if (!hasNoDoubleSpace(emCity)) {
-        setErr(errors, "emergencyCity", "Emergency city cannot contain consecutive spaces.");
-      } else if (emCity.trim().length < 3) {
-        setErr(errors, "emergencyCity", "Emergency city must be at least 3 characters.");
-      } else if (!isLettersAndSpacesOnly(emCity)) {
-        setErr(errors, "emergencyCity", "Emergency city may contain letters and spaces only.");
-      }
-    }
-
-    if (values.emergencyPincode.trim() && !isPincodeDigits(values.emergencyPincode)) {
-      setErr(errors, "emergencyPincode", "Emergency pincode must be exactly 6 digits.");
-    }
-
-    requireText("bankName", "Bank name", values.bankName);
-    requireText("ifscCode", "IFSC code", values.ifscCode);
-    requireText("accountNumber", "Account number", values.accountNumber);
-
-    const bank = values.bankName;
-    if (bank.trim()) {
-      if (!isNotOnlySpaces(bank) || !hasNoDoubleSpace(bank)) {
-        setErr(errors, "bankName", "Bank name cannot be empty or have double spaces.");
-      } else if (bank.trim().length < 3 || bank.trim().length > 50) {
-        setErr(errors, "bankName", "Bank name must be 3–50 characters.");
-      } else if (!isLettersAndSpacesOnly(bank)) {
-        setErr(errors, "bankName", "Bank name may contain letters and spaces only.");
-      }
-    }
-
-    // Branch name is auto-filled from IFSC. Do not validate it client-side.
-
-    const ifsc = values.ifscCode.trim();
-    if (ifsc) {
-      if (!hasNoDoubleSpace(values.ifscCode) || !isNotOnlySpaces(values.ifscCode)) {
-        setErr(errors, "ifscCode", "IFSC cannot be only spaces.");
-      } else if (ifsc.length < 3 || ifsc.length > 50) {
-        setErr(errors, "ifscCode", "IFSC must be 3–50 characters.");
-      } else if (!isAlphanumericNoSpace(ifsc)) {
-        setErr(errors, "ifscCode", "IFSC may contain letters and numbers only (no spaces).");
-      }
-    }
-
-    const acc = values.accountNumber.trim();
-    if (acc) {
-      if (!hasNoDoubleSpace(values.accountNumber)) {
-        setErr(errors, "accountNumber", "Account number cannot contain consecutive spaces.");
-      } else if (acc.length < 10 || acc.length > 50) {
-        setErr(errors, "accountNumber", "Account number must be 10–50 characters.");
-      } else if (!isAlphanumericNoSpace(acc)) {
-        setErr(errors, "accountNumber", "Account number may contain letters and numbers only.");
-      }
+    if (values.linkedinProfile.trim() && !isValidHttpUrl(values.linkedinProfile)) {
+      setErr(errors, "linkedinProfile", "LinkedIn Profile must be a valid URL (http/https).");
     }
 
     const REQUIRED_DOCS: DocStatusFileKey[] = [
-      "biodata",
-      "cancelled_cheque",
-      "gst_declaration",
       "vendor_registration_form",
+      "biodata",
       "non_disclosure_agreement",
-      "pan_card",
+      "health_declaration",
     ];
 
     (Object.keys(docStatuses) as DocStatusFileKey[]).forEach((docKey) => {
@@ -434,8 +497,11 @@ export function validateAssessorProfile(
         return;
       }
 
-      if (file && !isAllowedDocumentFile(file)) {
-        setErr(errors, docKey, "Allowed types: PDF, JPEG, JPG, PNG.");
+      if (file) {
+        const docError = getDocumentFileValidationError(file);
+        if (docError) {
+          setErr(errors, docKey, docError);
+        }
       }
     });
 
@@ -448,8 +514,11 @@ export function validateAssessorProfile(
         if (!isAllowedProfileImageFile(file)) {
           setErr(errors, "profile_image", "Profile image must be JPEG or PNG.");
         }
-      } else if (!isAllowedDocumentFile(file)) {
-        setErr(errors, key, "Allowed types: PDF, JPEG, JPG, PNG.");
+      } else {
+        const docError = getDocumentFileValidationError(file);
+        if (docError) {
+          setErr(errors, key, docError);
+        }
       }
     });
   } else {
@@ -465,8 +534,11 @@ export function validateAssessorProfile(
         if (!isAllowedProfileImageFile(file)) {
           setErr(errors, "profile_image", "Profile image must be JPEG or PNG.");
         }
-      } else if (!isAllowedDocumentFile(file)) {
-        setErr(errors, key, "Allowed types: PDF, JPEG, JPG, PNG.");
+      } else {
+        const docError = getDocumentFileValidationError(file);
+        if (docError) {
+          setErr(errors, key, docError);
+        }
       }
     });
 
@@ -502,90 +574,73 @@ export function validateAssessorProfile(
       setErr(errors, "pincode", "Pincode must be exactly 6 digits.");
     }
 
-    const panDraft = values.pancardNumber.replace(/\s+/g, "");
-    if (panDraft && (!/^[a-zA-Z0-9]{10}$/.test(panDraft) || panDraft.length !== 10)) {
-      setErr(errors, "pancardNumber", "PAN must be exactly 10 letters/numbers.");
-    }
-
-    if (values.gstYes) {
-      const gstn = values.gstNumber.trim();
-      if (gstn && !isGstNumberPattern(gstn)) {
-        setErr(errors, "gstNumber", "GST number must be alphanumeric and at most 15 characters.");
+    const yearsDraft = values.pancardNumber.trim();
+    if (yearsDraft) {
+      const numericYears = Number(yearsDraft);
+      if (Number.isNaN(numericYears) || numericYears < 0 || numericYears > 99) {
+        setErr(errors, "pancardNumber", "Enter valid years between 0 and 99.");
       }
     }
 
-    const emNameD = values.emergencyContactName;
-    if (emNameD.trim()) {
-      if (!isNotOnlySpaces(emNameD)) {
-        setErr(errors, "emergencyContactName", "Emergency contact name cannot be only spaces.");
-      } else if (!hasNoDoubleSpace(emNameD)) {
-        setErr(errors, "emergencyContactName", "Emergency contact name cannot contain consecutive spaces.");
-      } else if (emNameD.trim().length < 3 || emNameD.trim().length > 50) {
-        setErr(errors, "emergencyContactName", "Emergency contact name must be 3–50 characters.");
-      } else if (!isLettersAndSpacesOnly(emNameD)) {
-        setErr(errors, "emergencyContactName", "Emergency contact name may contain letters and spaces only.");
+    const totalYearsDraft = values.enrollmentDate.trim();
+    if (totalYearsDraft) {
+      const numericYears = Number(totalYearsDraft);
+      if (Number.isNaN(numericYears) || numericYears < 0 || numericYears > 99) {
+        setErr(errors, "enrollmentDate", "Enter valid years between 0 and 99.");
       }
     }
 
-    const emMobileD = values.emergencyMobile.trim();
-    if (emMobileD) {
-      if (!isDigitsOnly(emMobileD) || emMobileD.length !== 10 || !isIndianMobile(emMobileD)) {
-        setErr(errors, "emergencyMobile", "Enter a valid 10-digit emergency mobile starting with 6–9.");
+    const qualificationDraft = values.leadAssessor.trim();
+    if (qualificationDraft) {
+      if (!isQualificationCertificationPattern(qualificationDraft)) {
+        setErr(
+          errors,
+          "leadAssessor",
+          "Enter valid qualification/certification details (letters, numbers and , . / ( ) & + - only).",
+        );
+      } else if (qualificationDraft.length < 3 || qualificationDraft.length > 120) {
+        setErr(errors, "leadAssessor", "Qualification/certification must be 3 to 120 characters.");
       }
     }
 
-    draftOptionalAddr("emergencyAddressLine1", values.emergencyAddressLine1, "Emergency address line 1");
-    draftOptionalAddr("emergencyAddressLine2", values.emergencyAddressLine2, "Emergency address line 2");
-
-    const emCityD = values.emergencyCity.trim();
-    if (emCityD) {
-      if (!hasNoDoubleSpace(values.emergencyCity)) {
-        setErr(errors, "emergencyCity", "Emergency city cannot contain consecutive spaces.");
-      } else if (emCityD.length < 3) {
-        setErr(errors, "emergencyCity", "Emergency city must be at least 3 characters.");
-      } else if (!isLettersAndSpacesOnly(values.emergencyCity)) {
-        setErr(errors, "emergencyCity", "Emergency city may contain letters and spaces only.");
+    const educationalQualificationDraft = values.assessorGrade.trim();
+    if (educationalQualificationDraft) {
+      if (!isQualificationCertificationPattern(educationalQualificationDraft)) {
+        setErr(
+          errors,
+          "assessorGrade",
+          "Enter valid educational qualification (letters, numbers and , . / ( ) & + - only).",
+        );
+      } else if (educationalQualificationDraft.length < 2 || educationalQualificationDraft.length > 80) {
+        setErr(errors, "assessorGrade", "Educational qualification must be 2 to 80 characters.");
+      } else if (!hasEducationalQualificationKeyword(educationalQualificationDraft)) {
+        setErr(errors, "assessorGrade", "Enter a valid educational qualification.");
       }
     }
 
-    if (values.emergencyPincode.trim() && !isPincodeDigits(values.emergencyPincode)) {
-      setErr(errors, "emergencyPincode", "Emergency pincode must be exactly 6 digits.");
-    }
-
-    const bankD = values.bankName;
-    if (bankD.trim()) {
-      if (!isNotOnlySpaces(bankD) || !hasNoDoubleSpace(bankD)) {
-        setErr(errors, "bankName", "Bank name cannot be empty or have double spaces.");
-      } else if (bankD.trim().length < 3 || bankD.trim().length > 50) {
-        setErr(errors, "bankName", "Bank name must be 3–50 characters.");
-      } else if (!isLettersAndSpacesOnly(bankD)) {
-        setErr(errors, "bankName", "Bank name may contain letters and spaces only.");
+    const specializationDraft = values.gstNumber.trim();
+    if (specializationDraft) {
+      if (!isAreaSpecializationPattern(specializationDraft)) {
+        setErr(
+          errors,
+          "gstNumber",
+          "Enter valid area(s) of specialization (letters and , . / & + - only).",
+        );
+      } else if (specializationDraft.length < 2 || specializationDraft.length > 120) {
+        setErr(errors, "gstNumber", "Area(s) of specialization must be 2 to 120 characters.");
+      } else if (!hasSpecializationKeyword(specializationDraft)) {
+        setErr(errors, "gstNumber", "Enter a valid area of specialization.");
       }
     }
 
-    // Branch name is auto-filled from IFSC. Do not validate it client-side.
-
-    const ifscD = values.ifscCode.trim();
-    if (ifscD) {
-      if (!hasNoDoubleSpace(values.ifscCode) || !isNotOnlySpaces(values.ifscCode)) {
-        setErr(errors, "ifscCode", "IFSC cannot be only spaces.");
-      } else if (ifscD.length < 3 || ifscD.length > 50) {
-        setErr(errors, "ifscCode", "IFSC must be 3–50 characters.");
-      } else if (!isAlphanumericNoSpace(ifscD)) {
-        setErr(errors, "ifscCode", "IFSC may contain letters and numbers only (no spaces).");
-      }
+    if (values.companyWebsiteDetails.trim() && !isValidHttpUrl(values.companyWebsiteDetails)) {
+      setErr(errors, "companyWebsiteDetails", "Company website details must be a valid URL (http/https).");
+    }
+    if (values.linkedinProfile.trim() && !isValidHttpUrl(values.linkedinProfile)) {
+      setErr(errors, "linkedinProfile", "LinkedIn Profile must be a valid URL (http/https).");
     }
 
-    const accD = values.accountNumber.trim();
-    if (accD) {
-      if (!hasNoDoubleSpace(values.accountNumber)) {
-        setErr(errors, "accountNumber", "Account number cannot contain consecutive spaces.");
-      } else if (accD.length < 10 || accD.length > 50) {
-        setErr(errors, "accountNumber", "Account number must be 10–50 characters.");
-      } else if (!isAlphanumericNoSpace(accD)) {
-        setErr(errors, "accountNumber", "Account number may contain letters and numbers only.");
-      }
-    }
+    // No extra validations for removed emergency/bank sections.
   }
 
   return errors;

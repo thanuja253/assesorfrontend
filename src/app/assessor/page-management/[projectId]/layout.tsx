@@ -2,6 +2,8 @@ import ProjectTabs from "./_tabs";
 
 const TABS: { key: string; label: string; href: (projectId: string) => string }[] = [
   { key: "quick-view", label: "Quick view", href: (id) => `/facilitator/page-management/${id}/quick-view` },
+  { key: "registration-info", label: "Registration Info", href: (id) => `/facilitator/page-management/${id}/registration-info` },
+  { key: "contract-document", label: "Contract Document", href: (id) => `/facilitator/page-management/${id}/contract-document` },
   { key: "launch-training", label: "Launch & Training Program", href: (id) => `/facilitator/page-management/${id}/launch-training` },
   { key: "expenses", label: "Finance", href: (id) => `/facilitator/page-management/${id}/expenses` },
   { key: "assessment-checklist-documents", label: "View Assessment Submittals", href: (id) => `/facilitator/page-management/${id}/assessment-checklist-documents` },

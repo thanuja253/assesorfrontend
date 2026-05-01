@@ -1,4 +1,4 @@
-import { AUTH_TOKEN_KEY } from "@/lib/auth-user";
+import { AUTH_TOKEN_KEY, AUTH_USER_STORAGE_KEY } from "@/lib/auth-user";
 
 type LoginPayload = {
   email: string;
@@ -21,8 +21,8 @@ export class AuthApiError extends Error {
   }
 }
 
-async function apiFetch(_url: string, _init?: RequestInit): Promise<Response> {
-  throw new AuthApiError(501, "API integrations have been removed from this codebase.");
+async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
+  return fetch(url, init);
 }
 
 function resolveApiBaseUrl(): string {
@@ -119,15 +119,36 @@ async function loginRequest(path: string, payload: LoginPayload): Promise<LoginS
     throw new AuthApiError(500, "Login succeeded but no auth token was returned.");
   }
 
+  const userPayload =
+    (data?.user && typeof data.user === "object" ? (data.user as Record<string, unknown>) : null) ??
+    (data?.data?.user && typeof data.data.user === "object"
+      ? (data.data.user as Record<string, unknown>)
+      : null) ??
+    {};
+  const assignmentPayload =
+    (Array.isArray(data?.assignments) ? data.assignments : null) ??
+    (Array.isArray(data?.data?.assignments) ? data.data.assignments : null) ??
+    [];
+  const normalizedUser = {
+    ...userPayload,
+    assignments: Array.isArray((userPayload as Record<string, unknown>).assignments)
+      ? (userPayload as Record<string, unknown>).assignments
+      : assignmentPayload,
+  };
+
   return {
     token,
     message: data?.message ?? "Login successful",
-    user: data?.user ?? data?.data?.user ?? null,
+    user: normalizedUser,
   };
 }
 
+export function loginFacilitator(payload: LoginPayload): Promise<LoginSuccess> {
+  return loginRequest("/api/facilitator/auth/login", payload);
+}
+
 export function loginAssessor(payload: LoginPayload): Promise<LoginSuccess> {
-  return loginRequest("/api/assessor/auth/login", payload);
+  return loginFacilitator(payload);
 }
 
 export function loginCompany(payload: LoginPayload): Promise<LoginSuccess> {
@@ -199,19 +220,30 @@ function uniqByValue(options: SelectOption[]): SelectOption[] {
 }
 
 export async function fetchStates(): Promise<SelectOption[]> {
-  let response: Response;
-  try {
-    response = await apiFetch(getApiUrl("/api/company/states"), {
-      method: "GET",
-      headers: { Accept: "application/json" },
-    });
-  } catch {
-    throw new AuthApiError(0, "Network error. Please try again.");
+  const paths = [
+    "/api/company/all-states",
+    "/api/company/states-all",
+    "/api/company/states_all",
+  ];
+  let response: Response | null = null;
+  let data: unknown = null;
+
+  for (const path of paths) {
+    try {
+      response = await apiFetch(getApiUrl(path), {
+        method: "GET",
+        headers: { Accept: "application/json" },
+      });
+    } catch {
+      throw new AuthApiError(0, "Network error. Please try again.");
+    }
+    data = await response.json().catch(() => null);
+    if (response.ok || response.status !== 404) break;
   }
-  const data = await response.json().catch(() => null);
-  if (!response.ok) {
+
+  if (!response?.ok) {
     throw new AuthApiError(
-      response.status,
+      response?.status ?? 500,
       (data as { message?: string } | null)?.message ?? "Could not load states.",
     );
   }
@@ -324,6 +356,7 @@ export type AssessorProjectListItem = {
   id?: string;
   company_id?: string;
   project_id?: string;
+  project_code?: string;
   name?: string;
   email?: string;
   mobile?: string;
@@ -383,6 +416,162 @@ function normalizeProjectItem(item: AssessorProjectListItem): AssessorProjectLis
     account_status_label:
       item.account_status_label ?? (item as { status_label?: string }).status_label,
     quickview_project_id: item.quickview_project_id ?? idValue,
+  };
+}
+
+type LoginAssignment = {
+  project_id?: string;
+  company_id?: string;
+};
+
+function getStoredAssignments(): LoginAssignment[] {
+  if (globalThis.window === undefined) {
+    return [];
+  }
+  try {
+    const raw = globalThis.window.localStorage.getItem(AUTH_USER_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as Record<string, unknown> | null;
+    const assignments = parsed?.assignments;
+    if (!Array.isArray(assignments)) return [];
+    return assignments.filter((item) => item && typeof item === "object") as LoginAssignment[];
+  } catch {
+    return [];
+  }
+}
+
+function firstString(record: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return String(value);
+    }
+  }
+  return "";
+}
+
+function mapQuickviewToProjectItem(
+  projectId: string,
+  companyId: string,
+  payload: Record<string, unknown>,
+): AssessorProjectListItem {
+  const root = payload.data && typeof payload.data === "object" ? (payload.data as Record<string, unknown>) : payload;
+  const profile =
+    root.profile && typeof root.profile === "object" ? (root.profile as Record<string, unknown>) : {};
+  const company = root.company && typeof root.company === "object" ? (root.company as Record<string, unknown>) : {};
+  const project = root.project && typeof root.project === "object" ? (root.project as Record<string, unknown>) : {};
+
+  const merged = { ...root, ...company, ...project, ...profile };
+  return normalizeProjectItem({
+    id: firstString(merged, ["project_id", "project_mongo_id", "id", "_id"]) || projectId,
+    project_id: firstString(merged, ["project_id", "project_mongo_id", "id", "_id"]) || projectId,
+    project_code: firstString(merged, ["project_code", "projectCode", "code"]),
+    quickview_project_id: projectId,
+    company_id: firstString(merged, ["company_id", "reg_id", "companyId", "registration_id"]) || companyId,
+    name: firstString(merged, ["name", "company_name", "companyName", "project_name", "projectName"]),
+    email: firstString(merged, ["email", "company_email", "companyEmail"]),
+    mobile: firstString(merged, ["mobile", "phone", "contact_no", "contactNo", "mobile_number"]),
+    account_status: firstString(merged, ["account_status", "status", "accountStatus"]),
+    account_status_label: firstString(merged, ["account_status_label", "status_label"]),
+    state: firstString(merged, ["state", "state_name"]),
+    industry: firstString(merged, ["industry", "industry_category"]),
+    sector: firstString(merged, ["sector"]),
+    entity: firstString(merged, ["entity", "entity_type"]),
+  });
+}
+
+function matchesLocalProjectFilters(row: AssessorProjectListItem, filters: AssessorProjectListFilters): boolean {
+  const match = (source: string | undefined, target: string | undefined): boolean => {
+    const t = target?.trim().toLowerCase();
+    if (!t) return true;
+    return (source ?? "").toLowerCase().includes(t);
+  };
+  return (
+    match(row.company_id, filters.company_id ?? filters.reg_id) &&
+    match(row.project_id, filters.project_id) &&
+    match(row.name, filters.name) &&
+    match(row.email, filters.email) &&
+    match(row.mobile, filters.mobile) &&
+    match(row.state, filters.state) &&
+    match(row.industry, filters.industry) &&
+    match(row.sector, filters.sector) &&
+    match(row.entity, filters.entity) &&
+    match(`${row.company_id ?? ""} ${row.project_id ?? ""} ${row.name ?? ""} ${row.email ?? ""} ${row.mobile ?? ""}`, filters.search)
+  );
+}
+
+async function listAssignedProjectsFromLoginAssignments(
+  token: string,
+  params: AssessorProjectListParams,
+): Promise<AssessorProjectListResult | null> {
+  const assignments = getStoredAssignments();
+  if (assignments.length === 0) {
+    return null;
+  }
+
+  const normalizedAssignments = assignments
+    .map((item) => ({
+      project_id: (item.project_id ?? "").trim(),
+      company_id: (item.company_id ?? "").trim(),
+    }))
+    .filter((item) => item.project_id);
+
+  if (normalizedAssignments.length === 0) {
+    return { items: [], total: 0, page: toPositiveNumber(params.page, 1), limit: toPositiveNumber(params.limit, 10) };
+  }
+
+  const rows = (
+    await Promise.all(
+      normalizedAssignments.map(async (assignment) => {
+        try {
+          const response = await apiFetch(
+            getApiUrl(`/api/company/projects/${encodeURIComponent(assignment.project_id)}/quickview`),
+            {
+              method: "GET",
+              headers: { Authorization: `Bearer ${token}` },
+            },
+          );
+          const data = await response.json().catch(() => null);
+          if (!response.ok || !data || typeof data !== "object") {
+            return null;
+          }
+          return mapQuickviewToProjectItem(
+            assignment.project_id,
+            assignment.company_id,
+            data as Record<string, unknown>,
+          );
+        } catch {
+          return null;
+        }
+      }),
+    )
+  ).filter((item): item is AssessorProjectListItem => item !== null);
+
+  const cleanedFilters = cleanFiltersForLocal(params);
+  const filtered = rows.filter((row) => matchesLocalProjectFilters(row, cleanedFilters));
+  const page = toPositiveNumber(params.page, 1);
+  const limit = toPositiveNumber(params.limit, 10);
+  const start = Math.max(0, (page - 1) * limit);
+  const items = filtered.slice(start, start + limit);
+  return { items, total: filtered.length, page, limit };
+}
+
+function cleanFiltersForLocal(params: AssessorProjectListParams): AssessorProjectListFilters {
+  return {
+    company_id: params.company_id?.trim() || params.reg_id?.trim() || "",
+    reg_id: params.reg_id?.trim() || params.company_id?.trim() || "",
+    project_id: params.project_id?.trim() || "",
+    name: params.name?.trim() || "",
+    mobile: params.mobile?.trim() || "",
+    email: params.email?.trim() || "",
+    state: params.state?.trim() || "",
+    industry: params.industry?.trim() || "",
+    sector: params.sector?.trim() || "",
+    entity: params.entity?.trim() || "",
+    search: params.search?.trim() || "",
   };
 }
 
@@ -487,6 +676,12 @@ export async function listAssessorProjects(
 
   const page = toPositiveNumber(params.page, 1);
   const limit = toPositiveNumber(params.limit, 10);
+
+  const assignedFromLogin = await listAssignedProjectsFromLoginAssignments(token, params);
+  if (assignedFromLogin) {
+    return assignedFromLogin;
+  }
+
   const queryString = toQueryString({ ...params, page, limit });
   const paths = [
     "/api/assessor/auth/myprojects",
@@ -607,9 +802,9 @@ export function parseApiErrorMessage(data: unknown): string | undefined {
 }
 
 /**
- * POST /api/assessor/auth/change-password — requires assessor JWT in localStorage.
+ * POST /api/facilitator/auth/change-password — requires facilitator JWT in localStorage.
  */
-export async function changeAssessorPassword(
+export async function changeFacilitatorPassword(
   payload: AssessorChangePasswordPayload,
 ): Promise<{ message?: string }> {
   const token = getStoredToken();
@@ -619,7 +814,7 @@ export async function changeAssessorPassword(
 
   let response: Response;
   try {
-    response = await apiFetch(getApiUrl("/api/assessor/auth/change-password"), {
+    response = await apiFetch(getApiUrl("/api/facilitator/auth/change-password"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -671,10 +866,16 @@ export async function changeAssessorPassword(
   return { message: successMessage };
 }
 
+export async function changeAssessorPassword(
+  payload: AssessorChangePasswordPayload,
+): Promise<{ message?: string }> {
+  return changeFacilitatorPassword(payload);
+}
+
 /**
- * POST /api/assessor/auth/forgot-password — public; sends reset instructions to the assessor email.
+ * POST /api/facilitator/auth/forgot-password — public; sends reset instructions to the facilitator email.
  */
-export async function forgotAssessorPassword(payload: {
+export async function forgotFacilitatorPassword(payload: {
   email: string;
 }): Promise<{ message: string }> {
   const email = payload.email.trim().toLowerCase();
@@ -684,7 +885,7 @@ export async function forgotAssessorPassword(payload: {
 
   let response: Response;
   try {
-    response = await apiFetch(getApiUrl("/api/assessor/auth/forgot-password"), {
+    response = await apiFetch(getApiUrl("/api/facilitator/auth/forgot-password"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -712,4 +913,10 @@ export async function forgotAssessorPassword(payload: {
     "Password sent to your email!";
 
   return { message };
+}
+
+export async function forgotAssessorPassword(payload: {
+  email: string;
+}): Promise<{ message: string }> {
+  return forgotFacilitatorPassword(payload);
 }

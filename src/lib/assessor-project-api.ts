@@ -1,8 +1,8 @@
 import { AuthApiError, getApiUrl, parseApiErrorMessage } from "@/lib/auth-api";
 import { AUTH_TOKEN_KEY } from "@/lib/auth-user";
 
-async function apiFetch(_url: string, _init?: RequestInit): Promise<Response> {
-  throw new AuthApiError(501, "API integrations have been removed from this codebase.");
+async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
+  return fetch(url, init);
 }
 
 function getStoredToken(): string | null {
@@ -91,9 +91,44 @@ async function getJsonFromPaths(paths: string[]): Promise<Record<string, unknown
   throw new AuthApiError(lastStatus || 500, parseApiErrorMessage(lastData) ?? "Could not load project data.");
 }
 
+async function getJsonFromPublicPaths(paths: string[]): Promise<Record<string, unknown>> {
+  let lastStatus = 500;
+  let lastData: unknown = null;
+
+  for (const path of paths) {
+    let response: Response;
+    try {
+      response = await apiFetch(getApiUrl(path), {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+    } catch {
+      throw new AuthApiError(0, "Network error. Please try again.");
+    }
+
+    lastStatus = response.status;
+    const data = await parseJsonSafe(response);
+    lastData = data;
+
+    if (response.ok) {
+      return normalizePayload(data);
+    }
+    if (response.status !== 404) {
+      break;
+    }
+  }
+
+  if (lastStatus === 403) {
+    throw new AuthApiError(403, parseApiErrorMessage(lastData) ?? "Access denied.");
+  }
+  throw new AuthApiError(lastStatus || 500, parseApiErrorMessage(lastData) ?? "Could not load project data.");
+}
+
 async function postJsonToPaths(
   paths: string[],
   body: Record<string, unknown>,
+  method: "POST" | "PATCH" = "POST",
 ): Promise<Record<string, unknown>> {
   const headers = authHeaders();
   let lastStatus = 500;
@@ -103,7 +138,7 @@ async function postJsonToPaths(
     let response: Response;
     try {
       response = await apiFetch(getApiUrl(path), {
-        method: "POST",
+        method,
         headers: { ...headers, "Content-Type": "application/json" },
         cache: "no-store",
         body: JSON.stringify(body),
@@ -134,6 +169,22 @@ async function postJsonToPaths(
     throw new AuthApiError(403, parseApiErrorMessage(lastData) ?? "Access denied.");
   }
   throw new AuthApiError(lastStatus || 500, parseApiErrorMessage(lastData) ?? "Could not save facilitator score.");
+}
+
+async function ensureFacilitatorFlowProject(projectId: string): Promise<void> {
+  const quickview = await getCompanyProjectQuickView(projectId);
+  const profile =
+    (quickview.profile as Record<string, unknown> | undefined) ??
+    (quickview.project as Record<string, unknown> | undefined) ??
+    quickview;
+  const processType = profile.process_type;
+  const processTypeText =
+    typeof processType === "string" || typeof processType === "number"
+      ? String(processType).trim().toLowerCase()
+      : "";
+  if (processTypeText !== "f") {
+    throw new AuthApiError(400, "Contract document flow is available only for facilitator projects.");
+  }
 }
 
 async function downloadFromPaths(
@@ -229,6 +280,45 @@ async function postFormDataToPaths(
   throw new AuthApiError(lastStatus || 500, parseApiErrorMessage(lastData) ?? "Could not save expense.");
 }
 
+async function postFormDataToPublicPaths(
+  paths: string[],
+  formData: FormData,
+  method: "POST" | "PATCH" = "POST",
+): Promise<Record<string, unknown>> {
+  let lastStatus = 500;
+  let lastData: unknown = null;
+
+  for (const path of paths) {
+    let response: Response;
+    try {
+      response = await apiFetch(getApiUrl(path), {
+        method,
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+        body: formData,
+      });
+    } catch {
+      throw new AuthApiError(0, "Network error. Please try again.");
+    }
+
+    lastStatus = response.status;
+    const data = await parseJsonSafe(response);
+    lastData = data;
+
+    if (response.ok) {
+      return normalizePayload(data);
+    }
+    if (response.status !== 404) {
+      break;
+    }
+  }
+
+  if (lastStatus === 403) {
+    throw new AuthApiError(403, parseApiErrorMessage(lastData) ?? "Access denied.");
+  }
+  throw new AuthApiError(lastStatus || 500, parseApiErrorMessage(lastData) ?? "Could not save expense.");
+}
+
 export type AssessorProjectTabKey =
   | "quick-view"
   | "visit-details"
@@ -307,6 +397,29 @@ export async function getCompanyProjectPrimaryData(projectId: string): Promise<R
   ]);
 }
 
+export async function getCompanyProjectFacilitatorRegistrationInfo(projectId: string): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  let response: Response;
+  try {
+    response = await apiFetch(getApiUrl(`/api/company/projects/${id}/facilitator-registration-info`), {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+  } catch {
+    throw new AuthApiError(0, "Network error. Please try again.");
+  }
+
+  const data = await parseJsonSafe(response);
+  if (!response.ok) {
+    throw new AuthApiError(
+      response.status || 500,
+      parseApiErrorMessage(data) ?? "Could not load facilitator registration info.",
+    );
+  }
+  return normalizePayload(data);
+}
+
 export async function getCompanyProjectPrimaryDataReview(projectId: string): Promise<Record<string, unknown>> {
   const id = encodeURIComponent(ensureProjectId(projectId));
   return await getJsonFromPaths([
@@ -315,10 +428,7 @@ export async function getCompanyProjectPrimaryDataReview(projectId: string): Pro
 }
 
 export async function getCompanyProjectProposalWorkorderDocuments(projectId: string): Promise<Record<string, unknown>> {
-  const id = encodeURIComponent(ensureProjectId(projectId));
-  return await getJsonFromPaths([
-    `/api/company/projects/${id}/proposal-workorder-documents`,
-  ]);
+  return await getCompanyProjectWorkOrderDocument(projectId);
 }
 
 export async function getCompanyProjectProposalDocument(projectId: string): Promise<Record<string, unknown>> {
@@ -340,6 +450,95 @@ export async function getCompanyCoordinators(): Promise<Record<string, unknown>>
   return await getJsonFromPaths([
     `/api/company/projects/coordinators`,
     `/api/admin/coordinators`,
+  ]);
+}
+
+export async function getCompanyRegisterInfo(): Promise<Record<string, unknown>> {
+  return await getJsonFromPaths([
+    `/api/company/register-info`,
+  ]);
+}
+
+export async function uploadCompanyProjectWorkOrderDocument(
+  projectId: string,
+  workorderdocument: File,
+): Promise<Record<string, unknown>> {
+  await ensureFacilitatorFlowProject(projectId);
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  const formData = new FormData();
+  formData.set("workorderdocument", workorderdocument);
+  return await postFormDataToPaths([
+    `/api/company/projects/${id}/facilitator-contract-document`,
+    `/api/company/projects/${id}/work-order-document`,
+  ], formData, "POST");
+}
+
+export async function getCompanyProjectWorkOrderDocument(projectId: string): Promise<Record<string, unknown>> {
+  await ensureFacilitatorFlowProject(projectId);
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await getJsonFromPaths([
+    `/api/company/projects/${id}/facilitator-contract-document`,
+    `/api/company/projects/${id}/work-order-document`,
+  ]);
+}
+
+export async function getCompanyProjectProjectCode(projectId: string): Promise<Record<string, unknown>> {
+  await ensureFacilitatorFlowProject(projectId);
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await getJsonFromPaths([`/api/company/projects/${id}/project-code`]);
+}
+
+export async function reviewCompanyProjectWorkOrderDocument(
+  projectId: string,
+  payload: { wo_status: 1 | 2; wo_remarks?: string },
+): Promise<Record<string, unknown>> {
+  await ensureFacilitatorFlowProject(projectId);
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  const body: Record<string, unknown> = { wo_status: payload.wo_status };
+  if (payload.wo_status === 2) {
+    body.wo_remarks = payload.wo_remarks?.trim() ?? "";
+  }
+  return await postJsonToPaths([
+    `/api/company/projects/${id}/facilitator-contract-document/review`,
+    `/api/company/projects/${id}/work-order-document/review`,
+  ], body, "PATCH");
+}
+
+export async function reuploadCompanyProjectWorkOrderDocument(
+  projectId: string,
+  workorderdocument: File,
+): Promise<Record<string, unknown>> {
+  await ensureFacilitatorFlowProject(projectId);
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  const formData = new FormData();
+  formData.set("workorderdocument", workorderdocument);
+  return await postFormDataToPaths([
+    `/api/company/projects/${id}/facilitator-contract-document/reupload`,
+    `/api/company/projects/${id}/work-order-document/reupload`,
+  ], formData, "POST");
+}
+
+export async function saveCompanyProjectWorkOrderAcceptance(
+  projectId: string,
+  payload: { wo_po_number: string; wo_acceptance_date: string },
+): Promise<Record<string, unknown>> {
+  await ensureFacilitatorFlowProject(projectId);
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await postJsonToPaths([
+    `/api/company/projects/${id}/facilitator-contract-document/acceptance`,
+    `/api/company/projects/${id}/work-order-document/acceptance`,
+  ], {
+    wo_po_number: payload.wo_po_number,
+    wo_acceptance_date: payload.wo_acceptance_date,
+  }, "PATCH");
+}
+
+export async function getCompanyProjectWorkOrderAcceptance(projectId: string): Promise<Record<string, unknown>> {
+  await ensureFacilitatorFlowProject(projectId);
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await getJsonFromPaths([
+    `/api/company/projects/${id}/facilitator-contract-document/acceptance`,
+    `/api/company/projects/${id}/work-order-document/acceptance`,
   ]);
 }
 
@@ -396,6 +595,89 @@ export async function getProjectLaunchTraining(projectId: string): Promise<Recor
     `/api/admin/projects/${id}/launch-training`,
     `/api/company/projects/${id}/launch-training`,
   ]);
+}
+
+export async function uploadProjectLaunchTrainingSession(
+  projectId: string,
+  payload: {
+    sessionIndex: number;
+    sessionDate: string;
+    sessionTime?: string;
+    document: File;
+  },
+): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  const formData = new FormData();
+  formData.set("session_index", String(payload.sessionIndex));
+  formData.set("session_date", payload.sessionDate);
+  if (payload.sessionTime?.trim()) {
+    formData.set("session_time", payload.sessionTime.trim());
+  }
+  formData.set("document", payload.document);
+  formData.set("file", payload.document);
+  return await postFormDataToPaths(
+    [
+      `/api/company/projects/${id}/launch-training`,
+      `/api/admin/projects/${id}/launch-training`,
+    ],
+    formData,
+    "POST",
+  );
+}
+
+export async function getFacilitatorProjectLaunchTraining(projectId: string): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await getJsonFromPaths([
+    `/api/facilitator/projects/${id}/launch-and-training`,
+    `/api/facilitator/projects/${id}/launch-training`,
+    `/api/facilitator/projects/${id}/launch-training-program`,
+    `/api/facilitators/projects/${id}/launch-and-training`,
+    `/api/facilitators/projects/${id}/launch-training`,
+    `/api/facilitators/projects/${id}/launch-training-program`,
+  ]);
+}
+
+export async function uploadFacilitatorProjectLaunchTrainingSession(
+  projectId: string,
+  payload: {
+    sessionIndex: number;
+    sessionDate: string;
+    sessionTime?: string;
+    document: File;
+  },
+): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  const formData = new FormData();
+  const sessionIndexText = String(payload.sessionIndex);
+  const sessionDate = payload.sessionDate.trim();
+  const sessionTime = payload.sessionTime?.trim() ?? "";
+  formData.set("session_index", sessionIndexText);
+  formData.set("session", sessionIndexText);
+  formData.set("session_date", sessionDate);
+  formData.set("launch_training_report_date", sessionDate);
+  if (sessionTime) {
+    formData.set("session_time", sessionTime);
+  }
+  // Facilitator endpoints support these aliases.
+  formData.set("launch_session_file", payload.document);
+  formData.set("file", payload.document);
+  formData.set("document", payload.document);
+  formData.set("document_file", payload.document);
+  formData.set("upload", payload.document);
+  formData.set("launch_upload", payload.document);
+
+  return await postFormDataToPaths(
+    [
+      `/api/facilitator/projects/${id}/launch-training-sessions`,
+      `/api/facilitator/projects/${id}/launch-training`,
+      `/api/facilitator/projects/${id}/launch-and-training-document`,
+      `/api/facilitators/projects/${id}/launch-training-sessions`,
+      `/api/facilitators/projects/${id}/launch-training`,
+      `/api/facilitators/projects/${id}/launch-and-training-document`,
+    ],
+    formData,
+    "POST",
+  );
 }
 
 export async function getAdminAssessmentScoring(
@@ -584,6 +866,140 @@ export async function updateAdminExpenseInvoice(
     formData,
     "PATCH",
   );
+}
+
+export async function getFacilitatorFinanceInvoices(projectId: string): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  let proformaPayload: Record<string, unknown> | null = null;
+  let taxPayload: Record<string, unknown> | null = null;
+  let lastError: unknown = null;
+
+  try {
+    proformaPayload = await getJsonFromPublicPaths([
+      `/api/facilitator/projects/${id}/finance-v2/proforma`,
+      `/api/facilitators/projects/${id}/finance-v2/proforma`,
+    ]);
+  } catch (e: unknown) {
+    lastError = e;
+  }
+
+  try {
+    taxPayload = await getJsonFromPublicPaths([
+      `/api/facilitator/projects/${id}/finance-v2/tax-invoices`,
+      `/api/facilitator/projects/${id}/finance-v2/tax-tab`,
+      `/api/facilitators/projects/${id}/finance-v2/tax-invoices`,
+      `/api/facilitators/projects/${id}/finance-v2/tax-tab`,
+    ]);
+  } catch (e: unknown) {
+    lastError = e;
+  }
+
+  if (!proformaPayload && !taxPayload) {
+    if (lastError instanceof AuthApiError) {
+      throw lastError;
+    }
+    throw new AuthApiError(500, "Could not load facilitator finance invoices.");
+  }
+
+  const proformaListRaw = Array.isArray(proformaPayload?.invoices)
+    ? proformaPayload.invoices
+    : Array.isArray((proformaPayload?.data as Record<string, unknown> | undefined)?.invoices)
+      ? (((proformaPayload?.data as Record<string, unknown>).invoices) as unknown[])
+      : [];
+  const taxListRaw = Array.isArray(taxPayload?.invoices)
+    ? taxPayload.invoices
+    : Array.isArray((taxPayload?.data as Record<string, unknown> | undefined)?.invoices)
+      ? (((taxPayload?.data as Record<string, unknown>).invoices) as unknown[])
+      : [];
+  return {
+    invoices: [...proformaListRaw, ...taxListRaw],
+  };
+}
+
+export async function submitFacilitatorFinanceInvoiceSupporting(
+  projectId: string,
+  invoiceId: string,
+  invoiceType: string,
+  payload: {
+    transactionMode: string;
+    transactionId?: string;
+    supportingDocument: File;
+  },
+): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  const invId = encodeURIComponent(invoiceId.trim());
+  const formData = new FormData();
+  const mode = payload.transactionMode.trim();
+  const transactionId = payload.transactionId?.trim() ?? "";
+
+  formData.set("transaction_mode", mode);
+  formData.set("payment_mode", mode);
+  formData.set("trans_mode", mode);
+  if (transactionId) {
+    formData.set("transaction_id", transactionId);
+    formData.set("trans_id", transactionId);
+  }
+  formData.set("supporting_document", payload.supportingDocument);
+  formData.set("supporting_doc", payload.supportingDocument);
+  formData.set("offline_tran_doc", payload.supportingDocument);
+  formData.set("offlineTranDoc", payload.supportingDocument);
+  formData.set("document", payload.supportingDocument);
+  formData.set("file", payload.supportingDocument);
+  const type = invoiceType.trim().toLowerCase();
+  const proformaPaths = [
+    `/api/facilitator/projects/${id}/finance-v2/proforma/${invId}/submit-payment`,
+    `/api/facilitator/projects/${id}/finance-v2/proforma/${invId}/upload-supporting`,
+    `/api/facilitator/projects/${id}/finance-v2/proforma/${invId}/supporting-document`,
+    `/api/facilitator/projects/${id}/finance-v2/proforma/${invId}/payment`,
+    `/api/facilitator/projects/${id}/finance-v2/proforma/${invId}/submit`,
+    `/api/facilitator/projects/${id}/finance-v2/proforma/${invId}/reupload`,
+    `/api/facilitators/projects/${id}/finance-v2/proforma/${invId}/submit-payment`,
+    `/api/facilitators/projects/${id}/finance-v2/proforma/${invId}/upload-supporting`,
+    `/api/facilitators/projects/${id}/finance-v2/proforma/${invId}/supporting-document`,
+    `/api/facilitators/projects/${id}/finance-v2/proforma/${invId}/payment`,
+    `/api/facilitators/projects/${id}/finance-v2/proforma/${invId}/submit`,
+    `/api/facilitators/projects/${id}/finance-v2/proforma/${invId}/reupload`,
+  ];
+  const taxPaths = [
+    `/api/facilitator/projects/${id}/finance-v2/tax-invoices/${invId}/submit-payment`,
+    `/api/facilitator/projects/${id}/finance-v2/tax-tab/${invId}/submit-payment`,
+    `/api/facilitator/projects/${id}/finance-v2/tax-tab/${invId}/upload-supporting`,
+    `/api/facilitator/projects/${id}/finance-v2/tax-tab/${invId}/supporting-document`,
+    `/api/facilitator/projects/${id}/finance-v2/tax-tab/${invId}/payment`,
+    `/api/facilitator/projects/${id}/finance-v2/tax-tab/${invId}/submit`,
+    `/api/facilitator/projects/${id}/finance-v2/tax-tab/${invId}/reupload`,
+    `/api/facilitators/projects/${id}/finance-v2/tax-invoices/${invId}/submit-payment`,
+    `/api/facilitators/projects/${id}/finance-v2/tax-tab/${invId}/submit-payment`,
+    `/api/facilitators/projects/${id}/finance-v2/tax-tab/${invId}/upload-supporting`,
+    `/api/facilitators/projects/${id}/finance-v2/tax-tab/${invId}/supporting-document`,
+    `/api/facilitators/projects/${id}/finance-v2/tax-tab/${invId}/payment`,
+    `/api/facilitators/projects/${id}/finance-v2/tax-tab/${invId}/submit`,
+    `/api/facilitators/projects/${id}/finance-v2/tax-tab/${invId}/reupload`,
+  ];
+  const paths = type.includes("proforma") ? proformaPaths : taxPaths;
+  return await postFormDataToPublicPaths(paths, formData, "POST");
+}
+
+export async function getFacilitatorFinanceInvoiceApprovalStatus(
+  projectId: string,
+  invoiceId: string,
+  invoiceType: string,
+): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  const invId = encodeURIComponent(invoiceId.trim());
+  const type = invoiceType.trim().toLowerCase();
+  const proformaPaths = [
+    `/api/facilitator/projects/${id}/finance-v2/proforma/${invId}/approval`,
+    `/api/facilitators/projects/${id}/finance-v2/proforma/${invId}/approval`,
+  ];
+  const taxPaths = [
+    `/api/facilitator/projects/${id}/finance-v2/tax-invoices/${invId}/approval`,
+    `/api/facilitator/projects/${id}/finance-v2/tax-tab/${invId}/approval`,
+    `/api/facilitators/projects/${id}/finance-v2/tax-invoices/${invId}/approval`,
+    `/api/facilitators/projects/${id}/finance-v2/tax-tab/${invId}/approval`,
+  ];
+  const paths = type.includes("proforma") ? proformaPaths : taxPaths;
+  return await getJsonFromPublicPaths(paths);
 }
 
 

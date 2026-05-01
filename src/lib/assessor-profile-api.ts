@@ -1,9 +1,9 @@
 import { AuthApiError, getApiUrl, parseApiErrorMessage } from "@/lib/auth-api";
-import { AUTH_TOKEN_KEY } from "@/lib/auth-user";
+import { AUTH_TOKEN_KEY, getAssessorIdFromStoredUser } from "@/lib/auth-user";
 import type { AssessorProfileFormValues } from "@/lib/assessor-profile-map";
 
-async function apiFetch(_url: string, _init?: RequestInit): Promise<Response> {
-  throw new AuthApiError(501, "API integrations have been removed from this codebase.");
+async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
+  return fetch(url, init);
 }
 
 function getBearerToken(): string | null {
@@ -106,15 +106,66 @@ export async function getAssessorAdminProfile(assessorId: string): Promise<Recor
  * and file paths match the signed-in assessor.
  */
 export async function getAssessorMyProfile(): Promise<Record<string, unknown>> {
+  const facilitatorId = getAssessorIdFromStoredUser();
+  const query = facilitatorId ? `?facilitator_id=${encodeURIComponent(facilitatorId)}` : "";
+  const paths = [
+    `/api/facilitator/profile/me${query}`,
+    `/facilitator/profile/me${query}`,
+    `/api/facilitators/profile/me${query}`,
+    `/facilitators/profile/me${query}`,
+    "/api/facilitator/profile/me",
+    "/facilitator/profile/me",
+    "/api/facilitators/profile/me",
+    "/facilitators/profile/me",
+  ];
+  let response: Response | null = null;
+  let data: unknown = null;
+  for (const path of paths) {
+    try {
+      response = await apiFetch(getApiUrl(path), {
+        method: "GET",
+        headers: {
+          ...authHeadersJson(),
+          "Cache-Control": "no-cache",
+        },
+        cache: "no-store",
+      });
+    } catch {
+      throw new AuthApiError(0, "Network error. Please try again.");
+    }
+    data = await parseJsonSafe(response);
+    if (response.ok || response.status !== 404) {
+      break;
+    }
+  }
+  if (!response || !response.ok) {
+    throw new AuthApiError(
+      response?.status ?? 500,
+      parseApiErrorMessage(data) ?? "Could not load profile.",
+    );
+  }
+
+  const normalized = normalizeProfilePayload(data);
+  if (!normalized) {
+    throw new AuthApiError(500, "Profile response was empty.");
+  }
+  return normalized;
+}
+
+export async function getFacilitatorByEmail(email: string): Promise<Record<string, unknown> | null> {
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedEmail) return null;
+
   let response: Response;
   try {
-    response = await apiFetch(getApiUrl("/api/assessor/profile/me"), {
+    const query = new URLSearchParams({
+      page: "1",
+      limit: "10",
+      email: normalizedEmail,
+    });
+    response = await apiFetch(getApiUrl(`/api/admin/facilitators?${query.toString()}`), {
       method: "GET",
-      headers: {
-        ...authHeadersJson(),
-        // Ensure status/doc updates show immediately after admin action.
-        "Cache-Control": "no-cache",
-      },
+      headers: authHeadersJson(),
       cache: "no-store",
     });
   } catch {
@@ -125,15 +176,14 @@ export async function getAssessorMyProfile(): Promise<Record<string, unknown>> {
   if (!response.ok) {
     throw new AuthApiError(
       response.status,
-      parseApiErrorMessage(data) ?? "Could not load profile.",
+      parseApiErrorMessage(data) ?? "Could not load facilitator details.",
     );
   }
 
-  const normalized = normalizeProfilePayload(data);
-  if (!normalized) {
-    throw new AuthApiError(500, "Profile response was empty.");
-  }
-  return normalized;
+  const root = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+  const list = Array.isArray(root.data) ? root.data : [];
+  const first = list.find((item) => item && typeof item === "object") as Record<string, unknown> | undefined;
+  return first ?? null;
 }
 
 /**
@@ -242,21 +292,32 @@ async function tryUpdateAssessorProfileFallback(
  * PATCH /api/assessor/profile — assessor self profile update + docs upload (multipart)
  */
 export async function patchAssessorSelfProfile(formData: FormData): Promise<unknown> {
-  let response: Response;
-  try {
-    response = await apiFetch(getApiUrl("/api/assessor/profile"), {
-      method: "PATCH",
-      headers: authHeadersMultipart(),
-      body: cloneFormData(formData),
-    });
-  } catch {
-    throw new AuthApiError(0, "Network error. Please try again.");
+  const paths = [
+    "/api/facilitator/profile",
+    "/facilitator/profile",
+    "/api/facilitators/profile",
+    "/facilitators/profile",
+  ];
+  let response: Response | null = null;
+  let data: unknown = null;
+  for (const path of paths) {
+    try {
+      response = await apiFetch(getApiUrl(path), {
+        method: "PATCH",
+        headers: authHeadersMultipart(),
+        body: cloneFormData(formData),
+      });
+    } catch {
+      throw new AuthApiError(0, "Network error. Please try again.");
+    }
+    data = await parseJsonSafe(response);
+    if (response.ok || response.status !== 404) {
+      break;
+    }
   }
-
-  const data = await parseJsonSafe(response);
-  if (!response.ok) {
+  if (!response || !response.ok) {
     throw new AuthApiError(
-      response.status,
+      response?.status ?? 500,
       parseApiErrorMessage(data) ?? "Could not update profile.",
     );
   }
@@ -276,13 +337,23 @@ export function buildAssessorProfileFormData(
   const includeDocuments = options?.includeDocuments ?? true;
   const fd = new FormData();
   fd.append("name", values.name.trim());
+  fd.append("consultant_id", values.consultantId.trim());
   fd.append("email", values.email.trim());
   fd.append("mobile", values.mobile.trim());
   fd.append("gst_registered", values.gstYes ? "1" : "0");
   fd.append("industry_category", values.industryCategory.trim());
+  fd.append("organization", values.industryCategory.trim());
   fd.append("enrollment_date", values.enrollmentDate.trim());
+  fd.append("total_years_professional_experience", values.enrollmentDate.trim());
   fd.append("lead_assessor", values.leadAssessor.trim());
+  fd.append("additional_professional_qualification", values.leadAssessor.trim());
   fd.append("assessor_grade", values.assessorGrade.trim());
+  fd.append("educational_qualification", values.assessorGrade.trim());
+  fd.append("years_env_sustainability", values.pancardNumber.trim());
+  fd.append("areas_of_specialization", values.gstNumber.trim());
+  fd.append("company_website_details", values.companyWebsiteDetails.trim());
+  fd.append("linkedin_profile", values.linkedinProfile.trim());
+  fd.append("declaration_accepted", values.declarationAccepted ? "true" : "false");
   if (values.gstYes) {
     const gstTrimmed = values.gstNumber.trim();
     if (gstTrimmed) {
@@ -329,6 +400,9 @@ export function buildAssessorProfileFormData(
     const file = files[key];
     if (file) {
       fd.append(key, file);
+      if (key === "biodata") fd.append("brief_profile_individual", file);
+      if (key === "non_disclosure_agreement") fd.append("brief_profile_organization", file);
+      if (key === "health_declaration") fd.append("projects_handled", file);
     }
   });
 

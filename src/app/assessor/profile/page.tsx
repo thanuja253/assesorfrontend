@@ -1,5 +1,5 @@
-import { AssessorProfileForm } from "@/components/assessor/AssessorProfileForm";
+import { redirect } from "next/navigation";
 
 export default function AssessorProfilePage() {
-  return <AssessorProfileForm />;
+  redirect("/facilitator/profile");
 }
