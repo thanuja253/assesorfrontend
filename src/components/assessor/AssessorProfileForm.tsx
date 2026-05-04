@@ -1,10 +1,12 @@
 "use client";
 
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 import { AuthApiError, fetchIndustries, fetchStates, getApiUrl, type SelectOption } from "@/lib/auth-api";
 import {
   type AssessorProfileFileKey,
   buildAssessorProfileFormData,
+  getFacilitatorApprovalStatus,
   getFacilitatorByEmail,
   getAssessorMyProfile,
   patchAssessorSelfProfile,
@@ -328,7 +330,7 @@ function docStatusesFromDocumentApprovals(
 }
 
 function normalizeLegacyDocStatusesForProfileRejection(
-  statusNormalized: "Pending" | "Approved" | "Rejected" | "",
+  statusNormalized: "Draft" | "Pending" | "Approved" | "Rejected" | "",
   fromApprovals: {
     statuses: Record<DocStatusFileKey, string>;
     remarks: Record<DocStatusFileKey, string>;
@@ -649,6 +651,8 @@ function validateAccountNumberInline(raw: string): string {
 }
 
 export function AssessorProfileForm() {
+  const pathname = usePathname();
+  const isFacilitatorFlow = pathname.includes("/facilitator");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [saveError, setSaveError] = useState("");
@@ -706,7 +710,10 @@ export function AssessorProfileForm() {
   const [industryOptions, setIndustryOptions] = useState<SelectOption[]>([]);
   const [stateOptionsError, setStateOptionsError] = useState("");
   const [industryOptionsError, setIndustryOptionsError] = useState("");
-  const [approvalStatus, setApprovalStatus] = useState<"Pending" | "Approved" | "Rejected" | "">("");
+  const [approvalStatus, setApprovalStatus] = useState<"Draft" | "Pending" | "Approved" | "Rejected" | "">("");
+  const [documentsApprovalStatus, setDocumentsApprovalStatus] = useState("");
+  const [profileStatus, setProfileStatus] = useState("");
+  const [approvalRemarks, setApprovalRemarks] = useState("");
   const fileInputsRef = useRef<Partial<Record<AssessorProfileFileKey, HTMLInputElement | null>>>(
     {},
   );
@@ -864,7 +871,26 @@ export function AssessorProfileForm() {
     return docKeys.some((key) => (docStatuses[key] ?? "0").trim() === "2");
   }, [docStatuses]);
   const showUpdateButton = (isRejected || hasRejectedDocs) && !editMode;
-  const showProfileStepActions = !profileLocked;
+  const hasFormChanges = useMemo(() => {
+    const snapshot = snapshotRef.current;
+    if (!snapshot) {
+      return true;
+    }
+    return (Object.keys(form) as (keyof AssessorProfileFormValues)[]).some((key) => form[key] !== snapshot[key]);
+  }, [form]);
+  const hasDocStatusChanges = useMemo(() => {
+    const snapshot = docStatusesSnapshotRef.current;
+    const docKeys = Object.keys(DOC_STATUS_FORM_KEYS) as DocStatusFileKey[];
+    return docKeys.some((key) => (docStatuses[key] ?? "").trim() !== (snapshot[key] ?? "").trim());
+  }, [docStatuses]);
+  const hasPendingFileSelections = useMemo(
+    () => (Object.keys(files) as AssessorProfileFileKey[]).some((key) => Boolean(files[key])),
+    [files],
+  );
+  const showProfileStepActions = !profileLocked && (hasFormChanges || hasDocStatusChanges || hasPendingFileSelections);
+  const showApprovalStatusPanel = Boolean(
+    approvalStatus || documentsApprovalStatus || profileStatus || approvalRemarks,
+  );
   const accountStatusView = useMemo(() => normalizeAccountStatus(form.accountStatus), [form.accountStatus]);
   const accountActivationDateView = useMemo(
     () => formatAccountActivationDate(form.accountActivationDate),
@@ -906,12 +932,44 @@ export function AssessorProfileForm() {
     const loginEmail = getLoginEmailFromStorage();
     const payload = await getAssessorMyProfile();
     const facilitatorRecord = loginEmail ? await getFacilitatorByEmail(loginEmail).catch(() => null) : null;
-    const mergedPayload = facilitatorRecord ? { ...payload, ...facilitatorRecord } : payload;
+    const facilitatorIdForApprovalStatus = (() => {
+      const candidates = [
+        facilitatorRecord?.id,
+        facilitatorRecord?._id,
+        payload.id,
+        payload._id,
+        payload.facilitator_id,
+        payload.facilitatorId,
+      ];
+      for (const candidate of candidates) {
+        if (typeof candidate === "string" && candidate.trim()) {
+          return candidate.trim();
+        }
+      }
+      return "";
+    })();
+    const facilitatorApprovalStatus = facilitatorIdForApprovalStatus
+      ? await getFacilitatorApprovalStatus(facilitatorIdForApprovalStatus).catch(() => null)
+      : null;
+    const mergedPayload = { ...payload };
+    if (facilitatorRecord) {
+      Object.assign(mergedPayload, facilitatorRecord);
+    }
+    if (facilitatorApprovalStatus) {
+      Object.assign(mergedPayload, facilitatorApprovalStatus);
+    }
 
-    const statusValue = mergedPayload.approval_status ?? mergedPayload.approvalStatus ?? "";
+    const statusValue =
+      mergedPayload.approval_status ??
+      mergedPayload.approvalStatus ??
+      mergedPayload.overall_approval_status ??
+      mergedPayload.overallApprovalStatus ??
+      mergedPayload.documents_approval_status ??
+      mergedPayload.documentsApprovalStatus ??
+      "";
     const statusRaw =
       typeof statusValue === "string" ? statusValue.trim() : String(statusValue ?? "").trim();
-    let statusNormalized: "Pending" | "Approved" | "Rejected" | "" = "";
+    let statusNormalized: "Draft" | "Pending" | "Approved" | "Rejected" | "" = "";
     const lowered = statusRaw.toLowerCase();
     if (lowered === "approved") {
       statusNormalized = "Approved";
@@ -919,7 +977,22 @@ export function AssessorProfileForm() {
       statusNormalized = "Rejected";
     } else if (lowered === "pending") {
       statusNormalized = "Pending";
+    } else if (lowered === "draft") {
+      statusNormalized = "Draft";
     }
+    const remarksValue =
+      mergedPayload.approval_remarks ??
+      mergedPayload.approvalRemarks ??
+      mergedPayload.admin_remarks ??
+      mergedPayload.adminRemarks;
+    setApprovalRemarks(typeof remarksValue === "string" ? remarksValue.trim() : "");
+    const documentsStatusValue =
+      mergedPayload.documents_approval_status ?? mergedPayload.documentsApprovalStatus ?? "";
+    setDocumentsApprovalStatus(
+      typeof documentsStatusValue === "string" ? documentsStatusValue.trim() : "",
+    );
+    const profileStatusValue = mergedPayload.profile_status ?? mergedPayload.profileStatus ?? "";
+    setProfileStatus(typeof profileStatusValue === "string" ? profileStatusValue.trim() : "");
 
     const mapped = mapServerProfileToFormValues(mergedPayload);
     if (!mapped.email && loginEmail) {
@@ -977,40 +1050,27 @@ export function AssessorProfileForm() {
     serverProfileImageUrlSnapshotRef.current = imgUrl;
     setHasExistingProfile(true);
 
-    const docKeys = Object.keys(DOC_STATUS_FORM_KEYS) as DocStatusFileKey[];
-    const effectiveDocValues = docKeys.map((key) =>
-      effectiveDocRowStatus(key, doc, docNames, statusNormalized),
-    );
-    const hasRejectedDoc = effectiveDocValues.some((value) => String(value).trim() === "2");
-    const allApprovedDocs =
-      effectiveDocValues.length > 0 && effectiveDocValues.every((value) => String(value).trim() === "1");
-    const hasNonApprovedDoc = effectiveDocValues.some((value) => String(value).trim() !== "1");
-
-    let derivedStatus = statusNormalized;
-    if (hasRejectedDoc) {
-      derivedStatus = "Rejected";
-    } else if (hasNonApprovedDoc) {
-      derivedStatus = "Pending";
-    } else if (allApprovedDocs) {
-      derivedStatus = "Approved";
-    }
-
-      setApprovalStatus(derivedStatus);
-
-    const hasAnyUploadedDoc =
-      effectiveDocValues.some((value) => String(value).trim() !== "0") || hasImg || Boolean(imgUrl);
-
+    // Approval state must come from backend as source of truth.
+    setApprovalStatus(statusNormalized);
+    const canEditRaw = mergedPayload.can_edit_profile ?? mergedPayload.canEditProfile;
+    const canEditProfile =
+      typeof canEditRaw === "boolean"
+        ? canEditRaw
+        : typeof canEditRaw === "number"
+          ? canEditRaw !== 0
+          : typeof canEditRaw === "string"
+            ? !["false", "0", "no"].includes(canEditRaw.trim().toLowerCase())
+            : null;
+    const lockFromPayload = isProfileLockedFromPayload(mergedPayload);
     const locked =
-      derivedStatus === "Approved" ||
-      (derivedStatus === "Pending" && hasAnyUploadedDoc) ||
-      (isProfileLockedFromPayload(mergedPayload) && derivedStatus !== "Rejected");
+      canEditProfile !== null ? !canEditProfile : statusNormalized === "Approved" || lockFromPayload;
 
-    const baseLocked = derivedStatus === "Rejected" ? true : locked;
+    const baseLocked = locked;
     setProfileLocked(editModeRef.current ? false : baseLocked);
-    if (derivedStatus !== "Rejected") {
+    if (baseLocked) {
       setEditMode(false);
     }
-  }, [applyValues]);
+  }, [applyValues, isFacilitatorFlow]);
 
   const reloadLatestProfileStatus = useCallback(async () => {
     setRefreshing(true);
@@ -1038,6 +1098,7 @@ export function AssessorProfileForm() {
           if (error instanceof AuthApiError && error.status === 404) {
             setProfileLocked(false);
             setApprovalStatus("");
+            setApprovalRemarks("");
             setHasExistingProfile(false);
             const blankDoc = emptyDocCheckStatuses();
             setDocStatuses(blankDoc);
@@ -1316,6 +1377,7 @@ export function AssessorProfileForm() {
     setSaving(true);
     try {
       await patchAssessorSelfProfile(body);
+      await refreshProfileFromServer();
       setHasExistingProfile(true);
       // Once saved/submitted successfully, don't keep showing old validation states.
       setFieldErrors({});
@@ -1338,10 +1400,6 @@ export function AssessorProfileForm() {
         setHasServerProfileImage(true);
       }
       setFiles({});
-      if (finalSubmit) {
-        setProfileLocked(true);
-        setEditMode(false);
-      }
       return true;
     } catch (error) {
       setSaveError(error instanceof AuthApiError ? error.message : "Could not save profile.");
@@ -1406,6 +1464,30 @@ export function AssessorProfileForm() {
         {
           <>
             <div>
+              {showApprovalStatusPanel ? (
+                <div className="mb-3 rounded border border-[#e4e9f1] bg-[#fafbff] px-3 py-2 text-xs text-[#4f5a68]">
+                  {approvalStatus ? (
+                    <p>
+                      <span className="font-semibold">Approval status:</span> {approvalStatus}
+                    </p>
+                  ) : null}
+                  {documentsApprovalStatus ? (
+                    <p className="mt-1">
+                      <span className="font-semibold">Documents status:</span> {documentsApprovalStatus}
+                    </p>
+                  ) : null}
+                  {profileStatus ? (
+                    <p className="mt-1">
+                      <span className="font-semibold">Profile status:</span> {profileStatus}
+                    </p>
+                  ) : null}
+                  {approvalRemarks ? (
+                    <p className="mt-1">
+                      <span className="font-semibold">Admin remarks:</span> {approvalRemarks}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
               <p className="mb-2 text-xs font-semibold text-[#4f5a68]">Basic Details</p>
               <div className="grid gap-4 md:grid-cols-[220px_1fr]">
                 <div className="space-y-2">
@@ -2088,7 +2170,7 @@ export function AssessorProfileForm() {
                                 className="h-7 rounded bg-[#2f6ea5] px-3 text-xs text-white hover:bg-[#285d8a]"
                                 onClick={() => fileInputsRef.current[row.key]?.click()}
                               >
-                                Browse
+                                {isFacilitatorFlow && rejectedDocNeedsReupload ? "Re-upload" : "Upload"}
                               </button>
                             ) : null}
                           </div>

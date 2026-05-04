@@ -186,6 +186,41 @@ export async function getFacilitatorByEmail(email: string): Promise<Record<strin
   return first ?? null;
 }
 
+export async function getFacilitatorApprovalStatus(
+  facilitatorId: string,
+): Promise<Record<string, unknown> | null> {
+  const id = facilitatorId.trim();
+  if (!id) {
+    return null;
+  }
+  let response: Response;
+  try {
+    response = await apiFetch(
+      getApiUrl(`/api/admin/facilitators/${encodeURIComponent(id)}/approval-status?_ts=${Date.now()}`),
+      {
+        method: "GET",
+        headers: authHeadersJson(),
+        cache: "no-store",
+      },
+    );
+  } catch {
+    throw new AuthApiError(0, "Network error. Please try again.");
+  }
+
+  const data = await parseJsonSafe(response);
+  if (!response.ok) {
+    throw new AuthApiError(
+      response.status,
+      parseApiErrorMessage(data) ?? "Could not load facilitator approval status.",
+    );
+  }
+  const normalized = normalizeProfilePayload(data);
+  if (!normalized) {
+    return null;
+  }
+  return normalized;
+}
+
 /**
  * POST /api/admin/assessors/profile — first-time profile (multipart).
  */
