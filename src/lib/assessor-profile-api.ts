@@ -376,8 +376,12 @@ export function buildAssessorProfileFormData(
   fd.append("email", values.email.trim());
   fd.append("mobile", values.mobile.trim());
   fd.append("gst_registered", values.gstYes ? "1" : "0");
-  fd.append("industry_category", values.industryCategory.trim());
-  fd.append("organization", values.industryCategory.trim());
+  // Organization / industry: API accepts one non-empty among organization, Organization,
+  // industry_category, Industry_category and mirrors to DB — send only industry_category (snake_case).
+  const orgIndustry = values.industryCategory.trim();
+  if (orgIndustry) {
+    fd.append("industry_category", orgIndustry);
+  }
   fd.append("enrollment_date", values.enrollmentDate.trim());
   fd.append("total_years_professional_experience", values.enrollmentDate.trim());
   fd.append("lead_assessor", values.leadAssessor.trim());
