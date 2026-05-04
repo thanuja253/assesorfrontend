@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { AuthApiError } from "@/lib/auth-api";
 import {
@@ -67,6 +67,13 @@ function shouldHideSubmitMessage(message: string): boolean {
   );
 }
 
+function isPdfFile(file: File): boolean {
+  const fileName = file.name.trim().toLowerCase();
+  if (!fileName.endsWith(".pdf")) return false;
+  const mime = (file.type || "").trim().toLowerCase();
+  return mime === "" || mime === "application/pdf";
+}
+
 export default function AssessorProjectContractDocumentPage() {
   const routeParams = useParams<{ projectId: string }>();
   const projectId = typeof routeParams?.projectId === "string" ? routeParams.projectId : "";
@@ -74,8 +81,10 @@ export default function AssessorProjectContractDocumentPage() {
   const [error, setError] = useState("");
   const [docPayload, setDocPayload] = useState<Record<string, unknown>>({});
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [fileError, setFileError] = useState("");
   const [submitMessage, setSubmitMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -132,15 +141,19 @@ export default function AssessorProjectContractDocumentPage() {
   if (submitting) {
     uploadButtonLabel = "Uploading...";
   } else if (hasFile || isRejected) {
-    uploadButtonLabel = "Re-upload Document";
+    uploadButtonLabel = "Re-upload";
   }
 
   const onUpload = async () => {
     if (!selectedFile) {
-      setSubmitMessage("Please choose a PDF file first.");
+      setFileError("The Workorder Document Is Required");
       return;
     }
-    if (selectedFile.type && selectedFile.type !== "application/pdf") {
+    if (fileError) {
+      setSubmitMessage(fileError);
+      return;
+    }
+    if (!isPdfFile(selectedFile)) {
       setSubmitMessage("Only PDF files are allowed.");
       return;
     }
@@ -164,27 +177,45 @@ export default function AssessorProjectContractDocumentPage() {
     }
   };
 
+  const handleFileChange = (file: File | null): void => {
+    setSubmitMessage("");
+    if (!file) {
+      setSelectedFile(null);
+      setFileError("The Workorder Document Is Required");
+      return;
+    }
+
+    if (!isPdfFile(file)) {
+      setSelectedFile(null);
+      setFileError("Only PDF files are allowed.");
+      return;
+    }
+
+    setSelectedFile(file);
+    setFileError("");
+  };
+
   return (
     <div className="space-y-3">
-      <div className="rounded border border-[#dfe6f1] bg-white">
-        <div className="border-b border-[#edf1f7] px-5 py-3">
+      <div className="max-w-[860px] rounded border border-[#dfe6f1] bg-white">
+        <div className="px-3 py-2">
           <p className="text-sm font-semibold text-[#2f3a46]">Contract Document</p>
-          <p className="mt-0.5 text-xs text-[#7a8598]">Upload and review work order / contract document.</p>
+          <p className="mt-0.5 text-xs text-[#7a8598]">Upload and review contract document.</p>
         </div>
 
-        <div className="space-y-4 px-5 py-4">
+        <div className="space-y-3 px-4 py-3">
           {hasFile ? (
             <div className="space-y-4">
-              <div className="grid grid-cols-[320px_12px_1fr_auto] items-center gap-x-2 text-[15px]">
-                <p className="text-[#2f3a46]">Uploaded Work Order/ Contract Document</p>
+              <div className="grid gap-2 md:grid-cols-[230px_12px_minmax(0,1fr)_auto] md:items-center">
+                <p className="text-sm font-medium text-[#2f3a46]">Uploaded Contract Document</p>
                 <p className="text-[#7c8798]">:</p>
-                <p className="truncate text-[#2f3a46]">{textValue(shownFileName)}</p>
-                <div className="ml-3 flex gap-2">
+                <p className="truncate text-sm text-[#2f3a46]">{textValue(shownFileName)}</p>
+                <div className="ml-2 flex gap-2">
                   <a
                     href={doc.fileUrl || "#"}
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[#cfd8e6] bg-white text-xs text-[#55637b] hover:bg-[#f5f8fd]"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[#cfd8e6] bg-white text-xs text-[#55637b] hover:bg-[#f5f8fd]"
                     title="View document"
                   >
                     👁
@@ -192,39 +223,44 @@ export default function AssessorProjectContractDocumentPage() {
                   <a
                     href={doc.fileUrl || "#"}
                     download={doc.fileName || "work-order-document.pdf"}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[#cfd8e6] bg-white text-xs text-[#55637b] hover:bg-[#f5f8fd]"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[#cfd8e6] bg-white text-xs text-[#55637b] hover:bg-[#f5f8fd]"
                     title="Download document"
                   >
                     ⬇
                   </a>
                 </div>
               </div>
-              <div className="grid grid-cols-[320px_12px_1fr] items-center gap-x-2 text-[15px]">
-                <p className="text-[#2f3a46]">Approval Status</p>
+              <div className="grid gap-2 md:grid-cols-[230px_12px_minmax(0,1fr)] md:items-center">
+                <p className="text-sm font-medium text-[#2f3a46]">Approval Status</p>
                 <p className="text-[#7c8798]">:</p>
                 <div>
-                  <span className={`inline-flex rounded-md border px-2 py-0.5 text-[12px] font-medium ${status.className}`}>
+                  <span className={`inline-flex rounded-md border px-2.5 py-1 text-xs font-semibold ${status.className}`}>
                     {status.label}
                   </span>
                 </div>
               </div>
 
               {(isRejected || doc.canReupload) && (
-                <div className="rounded border border-[#f4d8d7] bg-[#fff8f8] p-3">
-                  <p className="text-xs font-medium text-[#9f2d2a]">Document is rejected. Please re-upload corrected file.</p>
-                  <div className="mt-2 flex flex-wrap items-center gap-3">
-                    <input
-                      id="work-order-document-file"
-                      type="file"
-                      accept="application/pdf"
-                      onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
-                      className="block h-10 w-full max-w-[360px] rounded border border-[#d7dfeb] bg-white px-3 text-sm text-[#2f3a46] file:mr-3 file:rounded file:border-0 file:bg-[#edf3ff] file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-[#234a93]"
-                    />
+                <div className="rounded-md border border-[#e2e8f3] bg-white p-3.5">
+                  <p className="text-sm font-medium text-[#2f3a46]">Document is rejected. Please re-upload corrected file.</p>
+                  <div className="mt-3 grid max-w-[560px] gap-2 lg:grid-cols-[minmax(0,360px)_auto] lg:items-center">
+                    <div className="min-w-0">
+                      <input
+                        id="work-order-document-file"
+                        type="file"
+                        accept="application/pdf,.pdf"
+                        onChange={(e) => handleFileChange(e.target.files?.[0] ?? null)}
+                        className={`block h-8 w-full rounded border bg-white px-2 text-[11px] text-[#2f3a46] file:mr-2 file:rounded file:border-0 file:bg-[#edf3ff] file:px-2 file:py-1 file:text-[10px] file:font-semibold file:text-[#234a93] ${
+                          fileError ? "border-[#d63f3f]" : "border-[#d7dfeb]"
+                        }`}
+                      />
+                      {fileError ? <p className="mt-1 text-xs text-[#b42318]">{fileError}</p> : null}
+                    </div>
                     <button
                       type="button"
                       onClick={() => void onUpload()}
                       disabled={submitting}
-                      className="inline-flex h-10 items-center rounded bg-[#2563eb] px-5 text-sm font-semibold text-white hover:bg-[#1f54c7] disabled:cursor-not-allowed disabled:opacity-60"
+                      className="inline-flex h-8 cursor-pointer items-center rounded-md bg-[#2f8f4e] px-1.5 text-[11px] font-semibold text-white hover:bg-[#267641] disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {uploadButtonLabel}
                     </button>
@@ -233,37 +269,48 @@ export default function AssessorProjectContractDocumentPage() {
               )}
             </div>
           ) : (
-            <div className="grid gap-4 lg:grid-cols-2">
-              <div className="space-y-1.5">
-                <label htmlFor="work-order-document-file" className="text-xs font-medium text-[#5f6b7a]">
-                  Upload Work Order / Contract Document <span className="text-[#d8232a]">*</span>
+            <div className="max-w-[700px] space-y-2">
+              <div className="grid gap-2 md:grid-cols-[220px_12px_minmax(0,300px)] md:items-center">
+                <label htmlFor="work-order-document-file" className="text-sm font-semibold text-[#2f3a46]">
+                  Upload Contract Document <span className="text-[#d8232a]">*</span>
                 </label>
-                <input
-                  id="work-order-document-file"
-                  type="file"
-                  accept="application/pdf"
-                  onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
-                  className="block h-10 w-full rounded border border-[#d7dfeb] bg-white px-3 text-sm text-[#2f3a46] file:mr-3 file:rounded file:border-0 file:bg-[#edf3ff] file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-[#234a93]"
-                />
-                <p className="text-[11px] text-[#7a8598]">PDF only</p>
+                <p className="text-[#7c8798]">:</p>
+                <div className="min-w-0">
+                  <input
+                    ref={fileInputRef}
+                    id="work-order-document-file"
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    onChange={(e) => handleFileChange(e.target.files?.[0] ?? null)}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className={`flex h-8 w-full items-center justify-center rounded-md border bg-white px-2 text-center text-xs text-[#2f3a46] ${
+                      fileError ? "border-[#d63f3f]" : "border-[#d5deeb]"
+                    }`}
+                  >
+                    {selectedFile ? selectedFile.name : "Choose File"}
+                  </button>
+                </div>
               </div>
-              <div className="flex items-end">
+              {fileError ? <p className="text-center text-xs font-medium text-[#e15757]">{fileError}</p> : null}
+              <div className="flex justify-center pt-1">
                 <button
                   type="button"
                   onClick={() => void onUpload()}
                   disabled={submitting}
-                  className="inline-flex h-10 items-center rounded bg-[#2563eb] px-5 text-sm font-semibold text-white hover:bg-[#1f54c7] disabled:cursor-not-allowed disabled:opacity-60"
+                  className="inline-flex h-9 min-w-[56px] cursor-pointer items-center justify-center rounded bg-[#2f8f4e] px-2 text-xs font-semibold text-white hover:bg-[#267641] disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {uploadButtonLabel}
+                  Send
                 </button>
               </div>
             </div>
           )}
 
-          {submitMessage && !shouldHideSubmitMessage(submitMessage) ? (
-            <p className={`text-xs ${submitMessage.includes("successfully") ? "text-[#1e7a3f]" : "text-[#b42318]"}`}>
-              {submitMessage}
-            </p>
+          {submitMessage && !shouldHideSubmitMessage(submitMessage) && submitMessage.includes("successfully") ? (
+            <p className="text-xs text-[#1e7a3f]">{submitMessage}</p>
           ) : null}
         </div>
       </div>

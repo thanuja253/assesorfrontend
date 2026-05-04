@@ -15,6 +15,10 @@ export function clearAssessorSession(): void {
 
 export type StoredAuthUser = Record<string, unknown>;
 
+function isMongoObjectId(value: string): boolean {
+  return /^[a-fA-F0-9]{24}$/.test(value.trim());
+}
+
 export function parseAuthUserFromStorage(): StoredAuthUser | null {
   if (typeof window === "undefined") {
     return null;
@@ -40,8 +44,7 @@ export function getAssessorIdFromStoredUser(): string | null {
   if (!user) {
     return null;
   }
-  const candidates = [user.id, user._id, user.assessorId, user.assessor_id];
-  for (const value of candidates) {
+  const pick = (value: unknown): string | null => {
     if (typeof value === "string" && value.trim()) {
       return value.trim();
     }
@@ -51,8 +54,23 @@ export function getAssessorIdFromStoredUser(): string | null {
         return oid.trim();
       }
     }
+    return null;
+  };
+
+  // Backend contract: myprojects expects assessor Mongo id from login data.user.id.
+  const idFromLogin = pick(user.id);
+  if (idFromLogin && isMongoObjectId(idFromLogin)) {
+    return idFromLogin;
   }
-  return null;
+
+  const rawCandidates = [user.assessor_id, user.assessorId, user._id, user.id];
+  const normalized = rawCandidates.map(pick).filter((value): value is string => Boolean(value));
+  const mongoId = normalized.find((value) => isMongoObjectId(value));
+  if (mongoId) {
+    return mongoId;
+  }
+
+  return normalized[0] ?? null;
 }
 
 /** Text before @ for display (e.g. login email); if no @, returns trimmed input. */

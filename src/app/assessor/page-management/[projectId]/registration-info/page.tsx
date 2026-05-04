@@ -111,11 +111,13 @@ function ReadonlyField({
   value,
   fullWidth = false,
 }: Readonly<{ label: string; value: unknown; fullWidth?: boolean }>) {
+  const displayValue = textValue(value);
+  const normalizedDisplay = displayValue === "—" ? "" : displayValue;
   return (
     <div className={fullWidth ? "md:col-span-2" : ""}>
       <p className="mb-1.5 text-xs font-medium tracking-wide text-[#5f6b7a]">{label}</p>
       <div className="flex min-h-10 items-center rounded-md border border-[#d8e1ee] bg-[#fbfcff] px-3 py-2 text-sm text-[#2d3746]">
-        {textValue(value)}
+        {normalizedDisplay}
       </div>
     </div>
   );
@@ -311,7 +313,6 @@ export default function AssessorProjectRegistrationInfoPage() {
     <div className="space-y-4">
       <div className="rounded-lg border border-[#dbe4f0] bg-gradient-to-r from-[#f9fbff] to-[#f4f8ff] px-5 py-4">
         <h2 className="text-lg font-semibold text-[#2f3a46]">Registration Info</h2>
-        <p className="mt-1 text-xs text-[#6f7c90]">Company registration snapshot and facilitator onboarding details.</p>
       </div>
 
       <div className="rounded border border-[#e2e8f3] bg-white p-3">

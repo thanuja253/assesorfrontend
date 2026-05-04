@@ -5,10 +5,40 @@ import type { FinanceTabKey } from "./finance-types";
 export default function FinanceTabs({
   activeTab,
   onChange,
+  facilitatorMode = false,
 }: Readonly<{
   activeTab: FinanceTabKey;
   onChange: (tab: FinanceTabKey) => void;
+  facilitatorMode?: boolean;
 }>) {
+  if (facilitatorMode) {
+    const tabs: Array<{ key: FinanceTabKey; label: string }> = [
+      { key: "proforma-tax", label: "Payments / Proforma" },
+      { key: "tax-invoice", label: "Tax Invoices" },
+      { key: "expenses", label: "Expenses" },
+    ];
+    return (
+      <div className="border-b border-[#dbe3ef]">
+        <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap">
+          {tabs.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => onChange(tab.key)}
+              className={`border-b-2 px-1 pb-2 pt-1 text-[13px] font-semibold ${
+                activeTab === tab.key
+                  ? "border-[#3b82f6] text-[#3b82f6]"
+                  : "border-transparent text-[#4b5563] hover:text-[#2563eb]"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-xl bg-white p-2 shadow-sm ring-1 ring-slate-200">
       <button

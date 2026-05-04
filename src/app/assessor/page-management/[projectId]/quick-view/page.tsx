@@ -8,12 +8,17 @@ import {
   getFacilitatorFinanceInvoiceApprovalStatus,
   getFacilitatorProjectLaunchTraining,
   getCompanyProjectPrimaryData,
+  getCompanyProjectPrimaryDataReview,
+  getCompanyProjectChecklistDocuments,
   getCompanyProjectFacilitatorRegistrationInfo,
   getCompanyProjectProjectCode,
   getCompanyProjectWorkOrderDocument,
   getCompanyCoordinators,
   getCompanyProjectAssignments,
   getCompanyProjectQuickView,
+  getAdminApprovedAssessorsCatalog,
+  getCompanyAssessmentCriteriaBySector,
+  getAdminAssessmentScoring,
 } from "@/lib/assessor-project-api";
 import { KVRow, SectionCard, normalizeRecords, textValue } from "../_ui";
 
@@ -77,6 +82,81 @@ function formatDateDDMMYYYY(value: unknown): string {
 
 function toPlainString(value: unknown): string {
   return typeof value === "string" || typeof value === "number" ? String(value) : "";
+}
+
+function hasMeaningfulAssignedAssessors(assessors: Record<string, unknown>[]): boolean {
+  return assessors.some((a) => {
+    const id = toPlainString(a.id ?? a.assessor_id ?? a.assessorId ?? a._id);
+    const name = toPlainString(a.name ?? a.assessor_name ?? a.assessorName);
+    const email = toPlainString(a.email).toLowerCase();
+    return id.length > 0 || name.trim().length > 0 || email.length > 0;
+  });
+}
+
+function resolveFirstSectorCriteriaId(criteriaPayload: Record<string, unknown>): string {
+  const rows = pickRecordList(criteriaPayload, ["data", "items", "rows", "result", "criteria"]);
+  for (const row of rows) {
+    const idRaw =
+      row.criteria_id ??
+      (row as Record<string, unknown>).criterian_id ??
+      row.id ??
+      (row as Record<string, unknown>)._id;
+    const idStr = typeof idRaw === "string" || typeof idRaw === "number" ? String(idRaw).trim() : "";
+    if (idStr) return idStr;
+  }
+  return "";
+}
+
+function extractFacilitatorScoringBlock(payload: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!payload || typeof payload !== "object") return null;
+  const direct = payload.scoring;
+  if (direct && typeof direct === "object" && !Array.isArray(direct)) {
+    return direct as Record<string, unknown>;
+  }
+  const data = payload.data;
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const d = data as Record<string, unknown>;
+    const s = d.scoring;
+    if (s && typeof s === "object" && !Array.isArray(s)) return s as Record<string, unknown>;
+  }
+  return null;
+}
+
+/** True when CII preliminary / pre-assessment scores exist (aligned with scoring page fields). */
+function hasFacilitatorPreliminaryScoringDone(payload: Record<string, unknown> | null): boolean {
+  const scoring = extractFacilitatorScoringBlock(payload);
+  if (!scoring) return false;
+  const totalRaw =
+    scoring.total_pre_assessment_score ??
+    scoring.total_preliminary_score ??
+    (scoring as Record<string, unknown>).total_pre_assessment ??
+    (scoring as Record<string, unknown>).totalPreAssessmentScore;
+  const totalNum = Number(totalRaw);
+  if (!Number.isNaN(totalNum) && totalNum !== 0) return true;
+
+  const rowsRaw = scoring.rows;
+  if (!Array.isArray(rowsRaw)) return false;
+  for (const row of rowsRaw) {
+    if (!row || typeof row !== "object") continue;
+    const r = row as Record<string, unknown>;
+    const candidates = [
+      r.preliminary_score,
+      r.pre_assessment_score,
+      r.pre_assesment_score,
+      r.coordinator_score,
+      r.coordinator_preliminary_score,
+      r.pre_score,
+    ];
+    for (const c of candidates) {
+      const n = Number(c);
+      if (!Number.isNaN(n) && n !== 0) return true;
+    }
+  }
+  return false;
+}
+
+function normalizeStepText(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ");
 }
 
 function hasDisplayValue(value: unknown): boolean {
@@ -305,17 +385,317 @@ function hasApprovedProformaAfterReupload(data: Record<string, unknown> | null):
 
 function hasPrimaryDataFilledPayload(data: Record<string, unknown> | null): boolean {
   if (!data || typeof data !== "object") return false;
-  const savedByInfoType = data.saved_by_info_type;
+  const root = unwrapPrimaryDataRoot(data);
+  const hasMeaningfulPrimaryValue = (value: unknown): boolean => {
+    if (value === null || value === undefined) return false;
+    if (typeof value === "string") return value.trim().length > 0;
+    if (typeof value === "number") return Number.isFinite(value);
+    if (typeof value === "boolean") return value;
+    if (Array.isArray(value)) return value.some((item) => hasMeaningfulPrimaryValue(item));
+    if (typeof value === "object") {
+      const rec = value as Record<string, unknown>;
+      return Object.values(rec).some((item) => hasMeaningfulPrimaryValue(item));
+    }
+    return false;
+  };
+  const savedByInfoType = root.saved_by_info_type;
   if (savedByInfoType && typeof savedByInfoType === "object" && !Array.isArray(savedByInfoType)) {
     const rec = savedByInfoType as Record<string, unknown>;
-    const hasAnySectionRows = Object.values(rec).some((value) => Array.isArray(value) && value.length > 0);
+    const hasAnySectionRows = Object.values(rec).some((value) => hasMeaningfulPrimaryValue(value));
     if (hasAnySectionRows) return true;
   }
-  const savedByDataId = data.saved_by_data_id;
+  const savedByDataId = root.saved_by_data_id;
   if (savedByDataId && typeof savedByDataId === "object" && !Array.isArray(savedByDataId)) {
     return Object.keys(savedByDataId as Record<string, unknown>).length > 0;
   }
+  const tarContainers: unknown[] = [
+    root.tar,
+    root.targets,
+    root.target,
+    root.info_type_wise_data,
+    root.infoTypeWiseData,
+    root.data_by_info_type,
+    root.dataByInfoType,
+    root.primary_data_by_info_type,
+    root.primaryDataByInfoType,
+  ];
+  for (const container of tarContainers) {
+    if (!container || typeof container !== "object") continue;
+    if (Array.isArray(container)) {
+      if (container.some((item) => hasMeaningfulPrimaryValue(item))) return true;
+      continue;
+    }
+    const rec = container as Record<string, unknown>;
+    const tarValue = rec.tar ?? rec.targets ?? rec.target;
+    if (hasMeaningfulPrimaryValue(tarValue)) {
+      return true;
+    }
+    if (Object.keys(rec).length > 0 && (rec.info_type === "tar" || rec.infoType === "tar")) {
+      return true;
+    }
+  }
+  const directTar = root.tar ?? root.targets ?? root.target;
+  if (hasMeaningfulPrimaryValue(directTar)) return true;
+  const relevantReviews = getRelevantPrimarySectionReviews(root);
+  if (relevantReviews.length > 0) return true;
   return false;
+}
+
+const EXCLUDED_PRIMARY_FLOW_SECTIONS = new Set(["gi", "ww"]);
+
+function unwrapPrimaryDataRoot(data: Record<string, unknown>): Record<string, unknown> {
+  const nested = data.data;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    return { ...data, ...(nested as Record<string, unknown>) };
+  }
+  return data;
+}
+
+function reviewRecordFromValue(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value === "string") {
+    return { status: value };
+  }
+  return null;
+}
+
+function getPrimarySectionReviewsMap(data: Record<string, unknown>): Record<string, unknown> {
+  const root = unwrapPrimaryDataRoot(data);
+  const raw =
+    root.section_reviews ?? root.sectionReviews ?? root.primary_data_section_reviews;
+  if (Array.isArray(raw)) {
+    const map: Record<string, unknown> = {};
+    for (const item of raw) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const rec = item as Record<string, unknown>;
+      const keyRaw = rec.section_key ?? rec.info_type ?? rec.infoType ?? rec.key;
+      if (typeof keyRaw === "string" && keyRaw.trim().length > 0) {
+        map[keyRaw.trim().toLowerCase()] = rec;
+      }
+    }
+    return map;
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {};
+  }
+  return raw as Record<string, unknown>;
+}
+
+function normalizePrimarySectionStatus(value: unknown): string {
+  if (typeof value === "string" || typeof value === "number") {
+    return String(value).trim().toLowerCase();
+  }
+  return "";
+}
+
+function isPrimarySectionRejected(review: Record<string, unknown>): boolean {
+  const resub = review.resubmitted_after_rejection ?? review.resubmittedAfterRejection;
+  if (resub === true || resub === "true" || resub === 1 || resub === "1") return true;
+  const statusText = normalizePrimarySectionStatus(
+    review.status ?? review.review_status ?? review.section_status ?? review.reviewStatus,
+  );
+  if (!statusText) return false;
+  if (statusText.includes("reject")) return true;
+  if (statusText.includes("not accepted")) return true;
+  return false;
+}
+
+function isPrimarySectionAccepted(review: Record<string, unknown>): boolean {
+  const statusText = normalizePrimarySectionStatus(
+    review.status ?? review.review_status ?? review.section_status ?? review.reviewStatus,
+  );
+  return statusText === "accepted";
+}
+
+function getRelevantPrimarySectionReviews(data: Record<string, unknown>): Record<string, unknown>[] {
+  const map = getPrimarySectionReviewsMap(data);
+  const out: Record<string, unknown>[] = [];
+  for (const [key, value] of Object.entries(map)) {
+    if (EXCLUDED_PRIMARY_FLOW_SECTIONS.has(key.toLowerCase())) continue;
+    const rec = reviewRecordFromValue(value);
+    if (rec) out.push(rec);
+  }
+  return out;
+}
+
+function hasAllChecklistDocumentsUploaded(data: Record<string, unknown> | null): boolean {
+  if (!data || typeof data !== "object") return false;
+  const rows = pickRecordList(data, ["data", "items", "rows", "documents", "result"]);
+  if (rows.length === 0) return false;
+  return rows.every((row) => {
+    const docPath = row.document_path ?? row.documentPath;
+    const docUrl = row.document_url ?? row.documentUrl;
+    const pathText = typeof docPath === "string" ? docPath.trim() : "";
+    const urlText = typeof docUrl === "string" ? docUrl.trim() : "";
+    return pathText.length > 0 || urlText.length > 0;
+  });
+}
+
+function hasRejectedChecklistDocuments(data: Record<string, unknown> | null): boolean {
+  if (!data || typeof data !== "object") return false;
+  const rows = pickRecordList(data, ["data", "items", "rows", "documents", "result"]);
+  if (rows.length === 0) return false;
+  return rows.some((row) => {
+    const statusRaw = row.status ?? row.document_status ?? row.review_status ?? row.approval_status;
+    const statusText =
+      typeof statusRaw === "string" || typeof statusRaw === "number"
+        ? String(statusRaw).trim().toLowerCase()
+        : "";
+    return statusText === "rejected" || statusText === "2" || statusText.includes("reject");
+  });
+}
+
+function hasAllChecklistDocumentsAccepted(data: Record<string, unknown> | null): boolean {
+  if (!data || typeof data !== "object") return false;
+  const rows = pickRecordList(data, ["data", "items", "rows", "documents", "result"]);
+  if (rows.length === 0) return false;
+  return rows.every((row) => {
+    const statusRaw = row.status ?? row.document_status ?? row.review_status ?? row.approval_status;
+    const statusText =
+      typeof statusRaw === "string" || typeof statusRaw === "number"
+        ? String(statusRaw).trim().toLowerCase()
+        : "";
+    return (
+      statusText === "accepted" ||
+      statusText === "approved" ||
+      statusText === "1" ||
+      statusText.includes("accept") ||
+      statusText.includes("approv")
+    );
+  });
+}
+
+function resolveFacilitatorPrimaryDataFlowSteps(
+  primaryDataForm: Record<string, unknown>,
+  checklistDocumentsData: Record<string, unknown> | null,
+  facilitatorAssessorAssignmentDone: boolean,
+  facilitatorPreliminaryScoringDone: boolean,
+): {
+  latest: { activity: string; status: string; responsibility: string };
+  next: { activity: string; status: string; responsibility: string };
+} {
+  const relevant = getRelevantPrimarySectionReviews(primaryDataForm);
+
+  for (const review of relevant) {
+    if (isPrimarySectionRejected(review)) {
+      return {
+        latest: {
+          activity: "CII rejected the primary data form",
+          status: "Rejected",
+          responsibility: "CII",
+        },
+        next: {
+          activity: "Company needs to re-upload primary data form",
+          status: "Pending",
+          responsibility: "Company",
+        },
+      };
+    }
+  }
+
+  if (relevant.length > 0) {
+    const allAccepted = relevant.every((r) => isPrimarySectionAccepted(r));
+    if (allAccepted) {
+      const allChecklistAccepted = hasAllChecklistDocumentsAccepted(checklistDocumentsData);
+      if (!allChecklistAccepted && hasRejectedChecklistDocuments(checklistDocumentsData)) {
+        return {
+          latest: {
+            activity: "Checklist documents has been rejected",
+            status: "Rejected",
+            responsibility: "CII",
+          },
+          next: {
+            activity: "Re-upload checklist documents",
+            status: "Pending",
+            responsibility: "Consultant",
+          },
+        };
+      }
+      if (allChecklistAccepted && hasAllChecklistDocumentsUploaded(checklistDocumentsData)) {
+        if (facilitatorAssessorAssignmentDone && facilitatorPreliminaryScoringDone) {
+          return {
+            latest: {
+              activity: "Preliminary scoring is completed",
+              status: "Completed",
+              responsibility: "CII",
+            },
+            next: {
+              activity: "Final scoring by assessor",
+              status: "Pending",
+              responsibility: "Assessor",
+            },
+          };
+        }
+        if (facilitatorAssessorAssignmentDone) {
+          return {
+            latest: {
+              activity: "Assessor assignment is done",
+              status: "Completed",
+              responsibility: "CII",
+            },
+            next: {
+              activity: "Preliminary Scoring to be submitted by CII",
+              status: "Pending",
+              responsibility: "CII",
+            },
+          };
+        }
+        return {
+          latest: {
+            activity: "Assessment submittals completed",
+            status: "Completed",
+            responsibility: "Consultant",
+          },
+          next: {
+            activity: "Assigning assessor by CII",
+            status: "Pending",
+            responsibility: "CII",
+          },
+        };
+      }
+      if (hasAllChecklistDocumentsUploaded(checklistDocumentsData)) {
+        return {
+          latest: {
+            activity: "Checklist documents has been uploaded",
+            status: "Completed",
+            responsibility: "Consultant",
+          },
+          next: {
+            activity: "CII need to approve/reject the doc",
+            status: "Pending",
+            responsibility: "CII",
+          },
+        };
+      }
+      return {
+        latest: {
+          activity: "CII accepted the primary data form",
+          status: "Accepted",
+          responsibility: "CII",
+        },
+        next: {
+          activity: "Assessment submittals need to be done by consultant",
+          status: "Pending",
+          responsibility: "Consultant",
+        },
+      };
+    }
+  }
+
+  return {
+    latest: {
+      activity: "Primary data filled by company",
+      status: "Completed",
+      responsibility: "Company",
+    },
+    next: {
+      activity: "CII need to accept or reject primary data form",
+      status: "Pending",
+      responsibility: "CII",
+    },
+  };
 }
 
 function detectFacilitatorProject(
@@ -395,8 +775,11 @@ function resolveFlowSteps(
   financeInvoicesData: Record<string, unknown> | null,
   proformaApprovalData: Record<string, unknown> | null,
   primaryDataForm: Record<string, unknown> | null,
+  checklistDocumentsData: Record<string, unknown> | null,
   coordinatorAssigned: boolean,
   isFacilitatorProject: boolean,
+  facilitatorAssessorAssignmentDone: boolean,
+  facilitatorPreliminaryScoringDone: boolean,
 ): {
   latest: { activity: string; status: string; responsibility: string };
   next: { activity: string; status: string; responsibility: string };
@@ -522,19 +905,13 @@ function resolveFlowSteps(
                   };
                 }
                 if (hasApprovedProformaAfterReupload(financeInvoicesData)) {
-                  if (hasPrimaryDataFilledPayload(primaryDataForm)) {
-                    return {
-                      latest: {
-                        activity: "Primary data filled by company",
-                        status: "Completed",
-                        responsibility: "Company",
-                      },
-                      next: {
-                        activity: "CII need to accept or reject primary data form",
-                        status: "Pending",
-                        responsibility: "CII",
-                      },
-                    };
+                  if (hasPrimaryDataFilledPayload(primaryDataForm) && primaryDataForm) {
+                    return resolveFacilitatorPrimaryDataFlowSteps(
+                      primaryDataForm,
+                      checklistDocumentsData,
+                      facilitatorAssessorAssignmentDone,
+                      facilitatorPreliminaryScoringDone,
+                    );
                   }
                   return {
                     latest: {
@@ -597,9 +974,9 @@ function resolveFlowSteps(
                   responsibility: "Consultant",
                 },
                 next: {
-                  activity: "PII need to be done by consultant",
+                  activity: "CII will upload proforma/invoice",
                   status: "Pending",
-                  responsibility: "Consultant",
+                  responsibility: "CII",
                 },
               };
             }
@@ -741,6 +1118,17 @@ export default function AssessorProjectQuickViewPage() {
   const [financeInvoicesData, setFinanceInvoicesData] = useState<Record<string, unknown> | null>(null);
   const [proformaApprovalData, setProformaApprovalData] = useState<Record<string, unknown> | null>(null);
   const [primaryDataForm, setPrimaryDataForm] = useState<Record<string, unknown> | null>(null);
+  const [checklistDocumentsData, setChecklistDocumentsData] = useState<Record<string, unknown> | null>(null);
+  const [facilitatorAdminAssessors, setFacilitatorAdminAssessors] = useState<{
+    loaded: boolean;
+    payload: Record<string, unknown> | null;
+    failed: boolean;
+  }>({ loaded: false, payload: null, failed: false });
+  const [facilitatorAssessmentScoring, setFacilitatorAssessmentScoring] = useState<{
+    loaded: boolean;
+    payload: Record<string, unknown> | null;
+    failed: boolean;
+  }>({ loaded: false, payload: null, failed: false });
   const [coordinatorCatalog, setCoordinatorCatalog] = useState<Record<string, unknown>[]>([]);
 
   useEffect(() => {
@@ -757,6 +1145,9 @@ export default function AssessorProjectQuickViewPage() {
       setFinanceInvoicesData(null);
       setProformaApprovalData(null);
       setPrimaryDataForm(null);
+      setChecklistDocumentsData(null);
+      setFacilitatorAdminAssessors({ loaded: false, payload: null, failed: false });
+      setFacilitatorAssessmentScoring({ loaded: false, payload: null, failed: false });
       setCoordinatorCatalog([]);
       setLoading(false);
       return () => {
@@ -777,6 +1168,54 @@ export default function AssessorProjectQuickViewPage() {
         const list = pickRecordList(coordinatorsPayload, ["items", "rows", "data", "coordinators", "result"]);
         setCoordinatorCatalog(list);
         if (detectFacilitatorProject(quickViewPayload, pathname ?? "")) {
+          setFacilitatorAdminAssessors({ loaded: false, payload: null, failed: false });
+          setFacilitatorAssessmentScoring({ loaded: false, payload: null, failed: false });
+          const sectorId = String(
+            quickViewPayload.sector_id ??
+              quickViewPayload.sectorId ??
+              (quickViewPayload.profile as Record<string, unknown> | undefined)?.mst_sector_id ??
+              (quickViewPayload.sector as Record<string, unknown> | undefined)?.id ??
+              (quickViewPayload.project as Record<string, unknown> | undefined)?.sector_id ??
+              "",
+          );
+          if (!sectorId) {
+            setFacilitatorAssessmentScoring({ loaded: true, payload: null, failed: true });
+          } else {
+            getCompanyAssessmentCriteriaBySector(sectorId)
+              .then((criteriaPayload) => {
+                if (cancelled) return null;
+                const crit =
+                  criteriaPayload && typeof criteriaPayload === "object"
+                    ? (criteriaPayload as Record<string, unknown>)
+                    : {};
+                const firstCriteriaId = resolveFirstSectorCriteriaId(crit);
+                if (!firstCriteriaId) return null;
+                return getAdminAssessmentScoring(projectId, firstCriteriaId);
+              })
+              .then((scoringPayload) => {
+                if (cancelled) return;
+                if (scoringPayload === null) {
+                  setFacilitatorAssessmentScoring({ loaded: true, payload: null, failed: true });
+                  return;
+                }
+                if (scoringPayload === undefined) return;
+                setFacilitatorAssessmentScoring({
+                  loaded: true,
+                  payload: scoringPayload as Record<string, unknown>,
+                  failed: false,
+                });
+              })
+              .catch(() => {
+                if (!cancelled) setFacilitatorAssessmentScoring({ loaded: true, payload: null, failed: true });
+              });
+          }
+          getAdminApprovedAssessorsCatalog()
+            .then((payload) => {
+              if (!cancelled) setFacilitatorAdminAssessors({ loaded: true, payload, failed: false });
+            })
+            .catch(() => {
+              if (!cancelled) setFacilitatorAdminAssessors({ loaded: true, payload: null, failed: true });
+            });
           getCompanyProjectFacilitatorRegistrationInfo(projectId)
             .then((regPayload) => {
               if (!cancelled) setFacilitatorRegistration(regPayload);
@@ -844,12 +1283,37 @@ export default function AssessorProjectQuickViewPage() {
                 setProformaApprovalData(null);
               }
             });
-          getCompanyProjectPrimaryData(projectId)
-            .then((payload) => {
-              if (!cancelled) setPrimaryDataForm(payload);
+          Promise.allSettled([
+            getCompanyProjectPrimaryData(projectId),
+            getCompanyProjectPrimaryDataReview(projectId),
+          ])
+            .then(([primaryResult, reviewResult]) => {
+              if (cancelled) return;
+              const primaryPayload =
+                primaryResult.status === "fulfilled" ? primaryResult.value : null;
+              const reviewPayload =
+                reviewResult.status === "fulfilled" ? reviewResult.value : null;
+              const hasObjectValues = (value: Record<string, unknown> | null): boolean =>
+                Boolean(value && Object.keys(value).length > 0);
+              if (hasObjectValues(primaryPayload)) {
+                setPrimaryDataForm(primaryPayload);
+                return;
+              }
+              if (hasObjectValues(reviewPayload)) {
+                setPrimaryDataForm(reviewPayload);
+                return;
+              }
+              setPrimaryDataForm(null);
             })
             .catch(() => {
               if (!cancelled) setPrimaryDataForm(null);
+            });
+          getCompanyProjectChecklistDocuments(projectId)
+            .then((payload) => {
+              if (!cancelled) setChecklistDocumentsData(payload);
+            })
+            .catch(() => {
+              if (!cancelled) setChecklistDocumentsData(null);
             });
         } else {
           setFacilitatorRegistration(null);
@@ -859,6 +1323,9 @@ export default function AssessorProjectQuickViewPage() {
           setFinanceInvoicesData(null);
           setProformaApprovalData(null);
           setPrimaryDataForm(null);
+          setChecklistDocumentsData(null);
+          setFacilitatorAdminAssessors({ loaded: false, payload: null, failed: false });
+          setFacilitatorAssessmentScoring({ loaded: false, payload: null, failed: false });
         }
       })
       .catch((e: unknown) => {
@@ -873,6 +1340,9 @@ export default function AssessorProjectQuickViewPage() {
         setFinanceInvoicesData(null);
         setProformaApprovalData(null);
         setPrimaryDataForm(null);
+        setChecklistDocumentsData(null);
+        setFacilitatorAdminAssessors({ loaded: false, payload: null, failed: false });
+        setFacilitatorAssessmentScoring({ loaded: false, payload: null, failed: false });
         setCoordinatorCatalog([]);
       })
       .finally(() => {
@@ -951,6 +1421,25 @@ export default function AssessorProjectQuickViewPage() {
     "facilitator_detail",
     "assigned_facilitator",
   ]);
+  const facilitatorFromRegistration = facilitatorRegistration
+    ? pickFirstRecord(facilitatorRegistration, ["selected_facilitator", "selectedFacilitator", "facilitator"])
+    : {};
+  const facilitatorResolved = {
+    ...facilitator,
+    ...facilitatorFromRegistration,
+    name:
+      facilitatorFromRegistration.name ??
+      facilitatorRegistration?.facilitator_name ??
+      facilitatorRegistration?.facilitatorName ??
+      facilitator.name,
+    consultant_id:
+      facilitatorFromRegistration.consultant_id ??
+      facilitatorFromRegistration.consultant_code ??
+      facilitatorFromRegistration.facilitator_code ??
+      facilitatorRegistration?.facilitator_code ??
+      facilitatorRegistration?.facilitatorCode ??
+      facilitator.consultant_id,
+  } as Record<string, unknown>;
   const quickviewAssessors = mapQuickviewAssessors(
     pickRecordList(quickView, ["companies_assessors"]),
   );
@@ -970,6 +1459,22 @@ export default function AssessorProjectQuickViewPage() {
   const latestStep = milestoneFlow.latest_step ?? milestoneFlow.latestStep ?? quickView.latest_step ?? quickView.latestStep;
   const nextStep = milestoneFlow.next_step ?? milestoneFlow.nextStep ?? quickView.next_step ?? quickView.nextStep;
   const isFacilitatorProject = detectFacilitatorProject(quickView, pathname ?? "");
+  const adminApprovedAssessorRows = pickRecordList(facilitatorAdminAssessors.payload ?? {}, [
+    "data",
+    "items",
+    "rows",
+    "result",
+  ]);
+  const facilitatorAssessorAssignmentDone =
+    isFacilitatorProject &&
+    facilitatorAdminAssessors.loaded &&
+    hasMeaningfulAssignedAssessors(assessors) &&
+    (adminApprovedAssessorRows.length > 0 || facilitatorAdminAssessors.failed);
+  const facilitatorPreliminaryScoringDone =
+    isFacilitatorProject &&
+    facilitatorAssessmentScoring.loaded &&
+    !facilitatorAssessmentScoring.failed &&
+    hasFacilitatorPreliminaryScoringDone(facilitatorAssessmentScoring.payload);
   const coordinatorAssigned = hasCoordinatorAssignedPayload(quickView, assignments);
   const flowSteps = resolveFlowSteps(
     quickView,
@@ -982,8 +1487,11 @@ export default function AssessorProjectQuickViewPage() {
     financeInvoicesData,
     proformaApprovalData,
     primaryDataForm,
+    checklistDocumentsData,
     coordinatorAssigned,
     isFacilitatorProject,
+    facilitatorAssessorAssignmentDone,
+    facilitatorPreliminaryScoringDone,
   );
   const visibleMilestoneRows = milestoneRows
     .map((row, idx) => {
@@ -1010,19 +1518,64 @@ export default function AssessorProjectQuickViewPage() {
     hasDisplayValue(coordinatorResolved.email) ||
     hasDisplayValue(coordinatorResolved.mobile ?? coordinatorResolved.phone);
   const showFacilitatorSection = assessors.length > 0;
+  const facilitatorFlowSteps: Array<{ label: string; aliases: string[]; responsibility: string }> = [
+    { label: "Company Registered by Company", aliases: ["company registered by company", "company registered"], responsibility: "Company" },
+    { label: "Company Filled Registration Info", aliases: ["company filled registration info", "registration filled"], responsibility: "Company" },
+    { label: "Contract document need to upload by consultant/facilitator", aliases: ["contract document need to upload", "contract document upload", "upload contract document"], responsibility: "Facilitator" },
+    { label: "Contract document review", aliases: ["contract document review", "contract review", "contract rejected", "re upload contract", "re-upload contract"], responsibility: "CII" },
+    { label: "Contract has been approved", aliases: ["contract has been approved", "contract approved"], responsibility: "Admin" },
+    { label: "CII to upload PO amount", aliases: ["cii to upload po amount", "upload po amount"], responsibility: "CII" },
+    { label: "Project code need to upload by CII", aliases: ["project code need to upload by cii", "project code need to upload"], responsibility: "CII" },
+    { label: "Assign project coordinator", aliases: ["assign project coordinator", "project coordinator assigned"], responsibility: "CII" },
+    { label: "Launch and training program need to done by consultant", aliases: ["launch and training", "launch training"], responsibility: "Consultant" },
+    { label: "Proforma invoice need to done by consultant", aliases: ["proforma invoice", "pi tax invoice"], responsibility: "Consultant" },
+    { label: "Supporting document needs to be uploaded", aliases: ["supporting document needs to be uploaded", "supporting document"], responsibility: "Consultant" },
+    { label: "CII need to approve/reject the proforma invoice", aliases: ["approve reject the proforma invoice", "cii need to approve reject"], responsibility: "CII" },
+    { label: "Company needs to upload primary data form", aliases: ["company needs to upload primary data form", "primary data form"], responsibility: "Company" },
+    { label: "CII accept or reject primary data form", aliases: ["cii accept or reject primary data form", "primary data accepted", "primary data rejected"], responsibility: "CII" },
+  ];
+  const normalizedLatest = normalizeStepText(flowSteps.latest.activity);
+  const normalizedNext = normalizeStepText(flowSteps.next.activity);
+  const matchesStep = (step: { label: string; aliases: string[] }, normalizedInput: string): boolean => {
+    if (!normalizedInput) return false;
+    const candidates = [step.label, ...step.aliases].map(normalizeStepText);
+    return candidates.some((candidate) =>
+      candidate.includes(normalizedInput) ||
+      normalizedInput.includes(candidate) ||
+      normalizedInput.split(" ").filter(Boolean).every((token) => candidate.includes(token))
+    );
+  };
+  const latestIndex = facilitatorFlowSteps.findIndex((step) => matchesStep(step, normalizedLatest));
+  const nextIndex = facilitatorFlowSteps.findIndex((step) => matchesStep(step, normalizedNext));
+  const resolvedLatestIndex = latestIndex >= 0 ? latestIndex : Math.max(0, nextIndex - 1);
+  const resolvedNextIndex = nextIndex >= 0 ? nextIndex : Math.min(resolvedLatestIndex + 1, facilitatorFlowSteps.length - 1);
+  const facilitatorActivityLog = isFacilitatorProject
+    ? facilitatorFlowSteps.map((step, idx) => {
+        if (idx < resolvedNextIndex) {
+          return { title: step.label, subtitle: `Completed • ${step.responsibility}`, state: "done" as const };
+        }
+        if (idx === resolvedNextIndex) {
+          return { title: step.label, subtitle: `${flowSteps.next.status} • ${flowSteps.next.responsibility}`, state: "pending" as const };
+        }
+        return { title: step.label, subtitle: "Upcoming", state: "upcoming" as const };
+      })
+    : [];
+  const facilitatorMilestones = isFacilitatorProject
+    ? facilitatorFlowSteps.map((step, idx) => ({ label: step.label, done: idx <= resolvedLatestIndex }))
+    : [];
 
   return (
     <div className="space-y-2">
       <div className="grid gap-3 xl:grid-cols-2">
         <SectionCard title="Company Details">
-          <KVRow label="Company Name" value={companyName} />
-          <KVRow label="Company ID" value={companyRegId} />
-          <KVRow label="Project ID" value={projectId} />
-          <KVRow label="Project Code" value={projectCode} />
-          <KVRow label="Email" value={companyEmail} />
-          <KVRow label="Mobile Number" value={companyMobile} />
-          <KVRow label="Turnover Of The Unit" value={company.turnover} />
-          <KVRow label="Account Status" value={accountStatusLabel} />
+          <KVRow label="Company Name" value={companyName} hidePlaceholder />
+          <KVRow label="Company ID" value={companyRegId} hidePlaceholder />
+          <KVRow label="Project ID" value={projectId} hidePlaceholder />
+          <KVRow label="Project Code" value={projectCode} hidePlaceholder />
+          <KVRow label="Email" value={companyEmail} hidePlaceholder />
+          <KVRow label="Mobile Number" value={companyMobile} hidePlaceholder />
+          <KVRow label="Turnover Of The Unit" value={company.turnover} hidePlaceholder />
+          <KVRow label="Account Status" value={accountStatusLabel} hidePlaceholder />
           <KVRow
             label="Activation Date"
             value={formatDateDDMMYYYY(
@@ -1031,13 +1584,32 @@ export default function AssessorProjectQuickViewPage() {
                 company.status_updated_at ??
                 company.created_at,
             )}
+            hidePlaceholder
           />
         </SectionCard>
 
         <SectionCard title="Facilitator Details">
-          <p className="text-sm text-[#2d3746]">
-            {textValue(facilitator.name ?? facilitator.message ?? "Facilitator assigned by Greenco Team")}
-          </p>
+          <KVRow label="Name" value={facilitatorResolved.name ?? facilitatorResolved.facilitator_name} hidePlaceholder />
+          <KVRow
+            label="Facilitator Code"
+            value={
+              facilitatorResolved.consultant_id ??
+              facilitatorResolved.consultant_code ??
+              facilitatorResolved.facilitator_code
+            }
+            hidePlaceholder
+          />
+          <KVRow label="Email" value={facilitatorResolved.email} hidePlaceholder />
+          <KVRow label="Mobile Number" value={facilitatorResolved.mobile} hidePlaceholder />
+          <KVRow label="State" value={facilitatorResolved.state} hidePlaceholder />
+          <KVRow label="City" value={facilitatorResolved.city} hidePlaceholder />
+          <KVRow label="Address" value={facilitatorResolved.address_line_1 ?? facilitatorResolved.addressLine1} hidePlaceholder />
+          <KVRow label="Pincode" value={facilitatorResolved.pincode} hidePlaceholder />
+          <KVRow
+            label="Industry Category"
+            value={facilitatorResolved.industry_category ?? facilitatorResolved.industryCategory}
+            hidePlaceholder
+          />
         </SectionCard>
       </div>
 
@@ -1049,7 +1621,7 @@ export default function AssessorProjectQuickViewPage() {
                 {visibleMilestoneRows.map(({ rowName, rowStatus, idx }) => {
                   return (
                     <div key={`${textValue(rowName)}-${idx}`} className="rounded border border-[#e7ecf3] bg-white px-3 py-2">
-                      <KVRow label={textValue(rowName)} value={rowStatus} />
+                      <KVRow label={textValue(rowName)} value={rowStatus} hidePlaceholder />
                     </div>
                   );
                 })}
@@ -1062,92 +1634,63 @@ export default function AssessorProjectQuickViewPage() {
               <KVRow
                 label="Latest Step"
                 value={`${flowSteps.latest.activity} (${flowSteps.latest.status} - ${flowSteps.latest.responsibility})`}
+                hidePlaceholder
               />
               <KVRow
                 label="Next Step"
                 value={`${flowSteps.next.activity} (${flowSteps.next.status} - ${flowSteps.next.responsibility})`}
+                hidePlaceholder
               />
             </SectionCard>
           )}
         </div>
       ) : null}
 
-      {isFacilitatorProject && (showStepStatusSection || showLatestNextStepSection) ? (
+      {isFacilitatorProject && showLatestNextStepSection ? (
         <div className="space-y-3">
-          {showStepStatusSection ? (
-            <SectionCard title="Step Status">
-              <div className="space-y-2">
-                {visibleMilestoneRows.map(({ rowName, rowStatus, idx }) => {
-                  return (
-                    <div key={`${textValue(rowName)}-${idx}`} className="rounded border border-[#e7ecf3] bg-white px-3 py-2">
-                      <KVRow label={textValue(rowName)} value={rowStatus} />
-                    </div>
-                  );
-                })}
-              </div>
-            </SectionCard>
-          ) : null}
-
-          {showLatestNextStepSection ? (
-            <div className="grid gap-3 xl:grid-cols-2">
+          <div className="grid gap-3 xl:grid-cols-2">
               <SectionCard title="Latest Step Completed">
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[320px] border-collapse text-sm">
                     <thead>
-                      <tr className="border-b border-[#e2e8f0] text-left text-[11px] font-semibold uppercase tracking-wide text-[#64748b]">
-                        <th className="py-2 pr-3">Activity</th>
-                        <th className="py-2 pr-3">Status</th>
-                        <th className="py-2">Responsibility</th>
+                      <tr className="text-left text-[11px] font-semibold uppercase tracking-wide text-[#6b7280]">
+                        <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Activity</th>
+                        <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Status</th>
+                        <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Responsibility</th>
                       </tr>
                     </thead>
                     <tbody>
-                      <tr className="border-b border-[#f1f5f9]">
-                        <td className="py-3 pr-3 font-medium text-[#1e293b]">{flowSteps.latest.activity}</td>
-                        <td className="py-3 pr-3 text-[#334155]">{flowSteps.latest.status}</td>
-                        <td className="py-3 text-[#334155]">{flowSteps.latest.responsibility}</td>
+                      <tr>
+                        <td className="border border-[#d9dde7] px-3 py-3 font-medium text-[#4b5563]">{flowSteps.latest.activity}</td>
+                        <td className="border border-[#d9dde7] px-3 py-3 text-[#4b5563]">{flowSteps.latest.status}</td>
+                        <td className="border border-[#d9dde7] px-3 py-3 text-[#4b5563]">{flowSteps.latest.responsibility}</td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
               </SectionCard>
 
-              <SectionCard
-                title="Next Step"
-                action={
-                  flowSteps.next.responsibility === "Facilitator" ? (
-                    <span className="rounded-full bg-[#e0f2fe] px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-[#0369a1]">
-                      Facilitator step
-                    </span>
-                  ) : undefined
-                }
-              >
+              <SectionCard title="Next Step">
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[320px] border-collapse text-sm">
                     <thead>
-                      <tr className="border-b border-[#e2e8f0] text-left text-[11px] font-semibold uppercase tracking-wide text-[#64748b]">
-                        <th className="py-2 pr-3">Activity</th>
-                        <th className="py-2 pr-3">Status</th>
-                        <th className="py-2">Responsibility</th>
+                      <tr className="text-left text-[11px] font-semibold uppercase tracking-wide text-[#6b7280]">
+                        <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Activity</th>
+                        <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Status</th>
+                        <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Responsibility</th>
                       </tr>
                     </thead>
                     <tbody>
-                      <tr className="bg-[#fffbeb]">
-                        <td className="py-3 pr-3 font-medium text-[#1e293b]">{flowSteps.next.activity}</td>
-                        <td className="py-3 pr-3 text-[#334155]">{flowSteps.next.status}</td>
-                        <td className="py-3 text-[#334155]">{flowSteps.next.responsibility}</td>
+                      <tr>
+                        <td className="border border-[#d9dde7] bg-[#fff700] px-3 py-3 font-medium text-[#4b5563]">{flowSteps.next.activity}</td>
+                        <td className="border border-[#d9dde7] bg-[#fff700] px-3 py-3 text-[#4b5563]">{flowSteps.next.status}</td>
+                        <td className="border border-[#d9dde7] bg-[#fff700] px-3 py-3 text-[#4b5563]">{flowSteps.next.responsibility}</td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
-                {flowSteps.next.responsibility === "Facilitator" ? (
-                  <p className="mt-4 text-sm text-[#64748b]">
-                    No immediate action is required from you. This step will be carried out by{" "}
-                    <span className="font-semibold text-[#334155]">Facilitator</span>.
-                  </p>
-                ) : null}
               </SectionCard>
-            </div>
-          ) : null}
+          </div>
         </div>
       ) : null}
 
@@ -1155,9 +1698,9 @@ export default function AssessorProjectQuickViewPage() {
         <div className="grid gap-3 xl:grid-cols-2">
           {showCoordinatorSection && (
             <SectionCard title="Co-ordinator Details">
-              <KVRow label="Name" value={coordinatorResolved.name ?? coordinatorResolved.coordinator_name} />
-              <KVRow label="Email" value={coordinatorResolved.email} />
-              <KVRow label="Mobile Number" value={coordinatorResolved.mobile ?? coordinatorResolved.phone} />
+              <KVRow label="Name" value={coordinatorResolved.name ?? coordinatorResolved.coordinator_name} hidePlaceholder />
+              <KVRow label="Email" value={coordinatorResolved.email} hidePlaceholder />
+              <KVRow label="Mobile Number" value={coordinatorResolved.mobile ?? coordinatorResolved.phone} hidePlaceholder />
             </SectionCard>
           )}
 
@@ -1166,8 +1709,8 @@ export default function AssessorProjectQuickViewPage() {
             <div className="space-y-2">
                 {assessors.slice(0, 2).map((assessor, idx) => (
                   <div key={`${textValue(assessor.name ?? assessor.assessor_name)}-${idx}`} className={idx > 0 ? "border-t border-[#eef2f7] pt-3" : ""}>
-                    <KVRow label="Name" value={assessor?.name ?? assessor?.assessor_name} />
-                    <KVRow label="Email" value={assessor?.email} />
+                    <KVRow label="Name" value={assessor?.name ?? assessor?.assessor_name} hidePlaceholder />
+                    <KVRow label="Email" value={assessor?.email} hidePlaceholder />
                     <KVRow
                       label="Site Visit Date"
                       value={(() => {
@@ -1181,6 +1724,7 @@ export default function AssessorProjectQuickViewPage() {
                         }
                         return formatDateDDMMYYYY(dates);
                       })()}
+                      hidePlaceholder
                     />
                   </div>
                 ))}
@@ -1189,6 +1733,49 @@ export default function AssessorProjectQuickViewPage() {
           )}
         </div>
       )}
+
+      {isFacilitatorProject ? (
+        <div className="grid gap-3 xl:grid-cols-2">
+          <SectionCard title="Company Activity Log">
+            <div className="space-y-0">
+              {facilitatorActivityLog.map((entry, idx) => (
+                <div key={`${entry.title}-${idx}`} className="relative flex items-start gap-3 pb-3 last:pb-0">
+                  {idx < facilitatorActivityLog.length - 1 ? (
+                    <span className="absolute left-[5px] top-4 bottom-0 w-px bg-[#cfd8e3]" />
+                  ) : null}
+                  <span
+                    className={`mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${
+                      entry.state === "done" ? "bg-[#22c55e]" : entry.state === "pending" ? "bg-[#f59e0b]" : "bg-[#cbd5e1]"
+                    }`}
+                  />
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-[#2f3a46]">{entry.title}</p>
+                    <p className="text-xs text-[#6b7280]">{entry.subtitle}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </SectionCard>
+
+          <SectionCard title="Company Milestone Flow">
+            <div className="space-y-0">
+              {facilitatorMilestones.map((entry, idx) => (
+                <div key={`${entry.label}-${idx}`} className="relative flex items-start gap-3 pb-3 last:pb-0">
+                  {idx < facilitatorMilestones.length - 1 ? (
+                    <span className="absolute left-[5px] top-4 bottom-0 w-px bg-[#cfd8e3]" />
+                  ) : null}
+                  <span
+                    className={`mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${
+                      entry.done ? "bg-[#22c55e]" : "bg-[#cbd5e1]"
+                    }`}
+                  />
+                  <p className={`text-sm ${entry.done ? "text-[#2f3a46]" : "text-[#64748b]"}`}>{entry.label}</p>
+                </div>
+              ))}
+            </div>
+          </SectionCard>
+        </div>
+      ) : null}
     </div>
   );
 }

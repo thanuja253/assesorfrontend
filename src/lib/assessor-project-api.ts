@@ -74,6 +74,9 @@ async function getJsonFromPaths(paths: string[]): Promise<Record<string, unknown
     if (response.ok) {
       return normalizePayload(data);
     }
+    if (response.status === 304) {
+      return normalizePayload(data);
+    }
     if (response.status !== 404) {
       break;
     }
@@ -89,6 +92,38 @@ async function getJsonFromPaths(paths: string[]): Promise<Record<string, unknown
     throw new AuthApiError(403, parseApiErrorMessage(lastData) ?? "Access denied.");
   }
   throw new AuthApiError(lastStatus || 500, parseApiErrorMessage(lastData) ?? "Could not load project data.");
+}
+
+function resolvePrimaryDataApiBaseUrl(): string {
+  const fromEnv = process.env.NEXT_PUBLIC_PRIMARY_DATA_API_BASE_URL?.replace(/\/$/, "");
+  if (fromEnv) return fromEnv;
+  if (process.env.NODE_ENV === "development") return "http://localhost:3019";
+  return "";
+}
+
+async function getPrimaryDataJson(path: string): Promise<Record<string, unknown>> {
+  const headers = authHeaders();
+  const base = resolvePrimaryDataApiBaseUrl();
+  const url = `${base}${path}${path.includes("?") ? "&" : "?"}_ts=${Date.now()}`;
+  let response: Response;
+  try {
+    response = await apiFetch(url, {
+      method: "GET",
+      headers: {
+        ...headers,
+        "Cache-Control": "no-cache",
+        Pragma: "no-cache",
+      },
+      cache: "no-store",
+    });
+  } catch {
+    throw new AuthApiError(0, "Network error. Please try again.");
+  }
+  const data = await parseJsonSafe(response);
+  if (response.ok || response.status === 304) {
+    return normalizePayload(data);
+  }
+  throw new AuthApiError(response.status || 500, parseApiErrorMessage(data) ?? "Could not load primary data.");
 }
 
 async function getJsonFromPublicPaths(paths: string[]): Promise<Record<string, unknown>> {
@@ -392,9 +427,7 @@ export async function getCompanyProjectQuickView(projectId: string): Promise<Rec
 
 export async function getCompanyProjectPrimaryData(projectId: string): Promise<Record<string, unknown>> {
   const id = encodeURIComponent(ensureProjectId(projectId));
-  return await getJsonFromPaths([
-    `/api/company/projects/${id}/primary-data`,
-  ]);
+  return await getPrimaryDataJson(`/api/company/projects/${id}/primary-data`);
 }
 
 export async function getCompanyProjectFacilitatorRegistrationInfo(projectId: string): Promise<Record<string, unknown>> {
@@ -422,9 +455,7 @@ export async function getCompanyProjectFacilitatorRegistrationInfo(projectId: st
 
 export async function getCompanyProjectPrimaryDataReview(projectId: string): Promise<Record<string, unknown>> {
   const id = encodeURIComponent(ensureProjectId(projectId));
-  return await getJsonFromPaths([
-    `/api/company/projects/${id}/primary-data/review`,
-  ]);
+  return await getPrimaryDataJson(`/api/company/projects/${id}/primary-data/review`);
 }
 
 export async function getCompanyProjectProposalWorkorderDocuments(projectId: string): Promise<Record<string, unknown>> {
@@ -450,6 +481,14 @@ export async function getCompanyCoordinators(): Promise<Record<string, unknown>>
   return await getJsonFromPaths([
     `/api/company/projects/coordinators`,
     `/api/admin/coordinators`,
+  ]);
+}
+
+/** Approved + complete-profile assessors catalog (admin). Used in facilitator quick view for assignment step. */
+export async function getAdminApprovedAssessorsCatalog(): Promise<Record<string, unknown>> {
+  const ts = Date.now();
+  return await getJsonFromPaths([
+    `/api/admin/assessors?approval_status=Approved&profile_status=Complete&page=1&limit=500&_ts=${ts}`,
   ]);
 }
 
@@ -685,7 +724,8 @@ export async function getAdminAssessmentScoring(
   criteriaId?: string,
 ): Promise<Record<string, unknown>> {
   const id = encodeURIComponent(ensureProjectId(projectId));
-  const qs = criteriaId?.trim() ? `?crt=${encodeURIComponent(criteriaId.trim())}` : "";
+  const c = criteriaId?.trim();
+  const qs = c ? `?criteria_id=${encodeURIComponent(c)}&crt=${encodeURIComponent(c)}` : "";
   return await getJsonFromPaths([
     `/api/assessor/auth/assesment_scoring/${id}${qs}`,
     `/api/assessor/auth/assessment_scoring/${id}${qs}`,

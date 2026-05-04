@@ -9,6 +9,7 @@ import {
   submitFacilitatorFinanceInvoiceSupporting,
 } from "@/lib/assessor-project-api";
 import {
+  asText,
   invoiceApprovalCode,
   invoiceApprovalText,
   invoiceAmountText,
@@ -93,7 +94,7 @@ export function useFinanceInvoices(projectId: string, useFacilitatorApi: boolean
     expenses: null,
   });
   const [transId, setTransId] = useState("");
-  const [transactionMode] = useState("Offline");
+  const [transactionMode, setTransactionMode] = useState("Offline");
   const [hasTouchedTransId, setHasTouchedTransId] = useState(false);
   const [hasTouchedSupportingFile, setHasTouchedSupportingFile] = useState(false);
   const [supportingFileName, setSupportingFileName] = useState("");
@@ -178,6 +179,7 @@ export function useFinanceInvoices(projectId: string, useFacilitatorApi: boolean
     const serverSupportingName = invoiceSupportingDocumentName(selectedInvoice);
     const shouldEdit = canEditPaymentForInvoice(selectedInvoice);
     setTransId(invoiceTransactionId(selectedInvoice));
+    setTransactionMode((asText(selectedInvoice.transaction_mode ?? selectedInvoice.payment_mode) || "Offline"));
     // In rejected/editable mode force selecting a fresh file for re-upload.
     setSupportingFileName(shouldEdit ? "" : serverSupportingName || localSupportingFileNameByInvoice[currentInvoiceId] || "");
     setSupportingFile(null);
@@ -287,6 +289,7 @@ export function useFinanceInvoices(projectId: string, useFacilitatorApi: boolean
     transId,
     setTransId,
     transactionMode,
+    setTransactionMode,
     selectedStatusLabel,
     selectedAmountText,
     hasTouchedTransId,

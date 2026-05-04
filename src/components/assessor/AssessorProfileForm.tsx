@@ -888,9 +888,8 @@ export function AssessorProfileForm() {
     [files],
   );
   const showProfileStepActions = !profileLocked && (hasFormChanges || hasDocStatusChanges || hasPendingFileSelections);
-  const showApprovalStatusPanel = Boolean(
-    approvalStatus || documentsApprovalStatus || profileStatus || approvalRemarks,
-  );
+  const showApprovalStatusPanel =
+    !isFacilitatorFlow && Boolean(approvalStatus || documentsApprovalStatus || profileStatus || approvalRemarks);
   const accountStatusView = useMemo(() => normalizeAccountStatus(form.accountStatus), [form.accountStatus]);
   const accountActivationDateView = useMemo(
     () => formatAccountActivationDate(form.accountActivationDate),

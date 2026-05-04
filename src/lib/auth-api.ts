@@ -1,4 +1,4 @@
-import { AUTH_TOKEN_KEY, AUTH_USER_STORAGE_KEY } from "@/lib/auth-user";
+import { AUTH_TOKEN_KEY, AUTH_USER_STORAGE_KEY, getAssessorIdFromStoredUser } from "@/lib/auth-user";
 
 type LoginPayload = {
   email: string;
@@ -350,6 +350,9 @@ export type AssessorProjectListParams = AssessorProjectListFilters & {
   length?: number;
   page?: number;
   limit?: number;
+  /** Assessor MongoDB id for GET /api/assessor/auth/myprojects (backend also accepts assessorId / id). */
+  assessor_id?: string;
+  assessorId?: string;
 };
 
 export type AssessorProjectListItem = {
@@ -520,7 +523,8 @@ async function listAssignedProjectsFromLoginAssignments(
     .filter((item) => item.project_id);
 
   if (normalizedAssignments.length === 0) {
-    return { items: [], total: 0, page: toPositiveNumber(params.page, 1), limit: toPositiveNumber(params.limit, 10) };
+    // If login assignments exist but are missing project_id shape, fallback to myprojects API.
+    return null;
   }
 
   const rows = (
@@ -549,6 +553,10 @@ async function listAssignedProjectsFromLoginAssignments(
       }),
     )
   ).filter((item): item is AssessorProjectListItem => item !== null);
+  if (rows.length === 0) {
+    // Quickview-based assignment expansion failed; fallback to myprojects endpoint instead.
+    return null;
+  }
 
   const cleanedFilters = cleanFiltersForLocal(params);
   const filtered = rows.filter((row) => matchesLocalProjectFilters(row, cleanedFilters));
@@ -590,12 +598,18 @@ function toQueryString(params: AssessorProjectListParams): string {
   const turnoverMax = params.turnover_max?.trim() || params.toturnover?.trim() || "";
   const searchValue = params.search?.trim() || "";
 
+  const assessorMongoId =
+    params.assessor_id?.trim() || params.assessorId?.trim() || getAssessorIdFromStoredUser() || "";
+
   const map: Record<string, string | number | undefined> = {
     page,
     limit,
     draw,
     start,
     length,
+    assessor_id: assessorMongoId || undefined,
+    assessorId: assessorMongoId || undefined,
+    id: assessorMongoId || undefined,
     company_id: companyId || undefined,
     reg_id: companyId || undefined,
     project_id: params.project_id,

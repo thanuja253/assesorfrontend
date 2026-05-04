@@ -22,8 +22,8 @@ export default function FinanceInvoiceTabs({
       {vm.error ? (
         <p className="rounded border border-[#f3c9cf] bg-[#fff2f3] px-3 py-2 text-sm text-[#b14456]">{vm.error}</p>
       ) : null}
-      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-        <FinanceTabs activeTab={vm.activeTab} onChange={vm.setActiveTab} />
+      <div className={useFacilitatorApi ? "space-y-3" : "grid grid-cols-1 items-start gap-4 lg:grid-cols-[280px_minmax(0,1fr)]"}>
+        <FinanceTabs activeTab={vm.activeTab} onChange={vm.setActiveTab} facilitatorMode={useFacilitatorApi} />
         <div className="min-w-0">
           {vm.selectedInvoice ? (
             <InvoiceDetailCard
@@ -39,6 +39,7 @@ export default function FinanceInvoiceTabs({
               amountText={vm.selectedAmountText}
               transId={vm.transId}
               transactionMode={vm.transactionMode}
+              onTransactionModeChange={vm.setTransactionMode}
               onTransIdChange={(v) => {
                 vm.setTransId(v);
                 if (!vm.hasTouchedTransId) vm.setHasTouchedTransId(true);
@@ -50,9 +51,12 @@ export default function FinanceInvoiceTabs({
               shouldShowSupportingFileError={vm.shouldShowSupportingFileError}
               transactionIdError={vm.transactionIdError}
               supportingFileError={vm.supportingFileError}
-              onSubmitPayment={() => void vm.handleSubmitPayment()}
+              onSubmitPayment={() => {
+                vm.handleSubmitPayment().catch(() => undefined);
+              }}
               canSubmit={vm.canSubmit}
               submitting={vm.submittingId === (vm.selectedInvoice.id ?? vm.selectedInvoice._id ?? "")}
+              facilitatorMode={useFacilitatorApi}
             />
           ) : (
             <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-slate-200">

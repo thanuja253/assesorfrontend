@@ -39,12 +39,18 @@ export function SectionCard({
   );
 }
 
-export function KVRow({ label, value }: Readonly<{ label: string; value: unknown }>) {
+export function KVRow({
+  label,
+  value,
+  hidePlaceholder = false,
+}: Readonly<{ label: string; value: unknown; hidePlaceholder?: boolean }>) {
+  const normalized = textValue(value);
+  const display = hidePlaceholder && normalized === "—" ? "" : normalized;
   return (
     <div className="grid grid-cols-[180px_16px_1fr] gap-x-2 py-1.5 text-sm">
       <p className="text-[#5c6777]">{label}</p>
       <p className="text-[#9099a8]">:</p>
-      <p className="text-[#2d3746]">{textValue(value)}</p>
+      <p className="text-[#2d3746]">{display}</p>
     </div>
   );
 }

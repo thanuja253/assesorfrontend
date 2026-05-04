@@ -436,14 +436,30 @@ export default function AssessorProjectManagementPage() {
         </td>
         <td className="px-3 py-2">
           {quickViewProjectId ? (
-            <a
-              href={`/facilitator/page-management/${encodeURIComponent(quickViewProjectId)}/quick-view`}
-              className="inline-flex h-6 w-6 items-center justify-center rounded border border-[#cfe1f4] bg-[#f4f9ff] text-xs text-[#3b79b3] hover:bg-[#e8f3ff]"
-              title="Quick View"
-              aria-label="Quick View"
-            >
-              ✎
-            </a>
+            <div className="flex items-center gap-2">
+              <a
+                href={`/facilitator/page-management/${encodeURIComponent(quickViewProjectId)}/quick-view`}
+                className="inline-flex h-5 w-5 items-center justify-center rounded bg-[#e6f0fb] text-[#6b9ecb] hover:bg-[#d8e8f8]"
+                title="Edit"
+                aria-label="Edit"
+              >
+                <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" aria-hidden>
+                  <path d="M4.5 13.9L4 16L6.1 15.5L14.7 6.9L13.1 5.3L4.5 13.9Z" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M11.9 4.7L13.5 3.1C13.9 2.7 14.6 2.7 15 3.1L16.9 5C17.3 5.4 17.3 6.1 16.9 6.5L15.3 8.1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </a>
+              <a
+                href={`/facilitator/page-management/${encodeURIComponent(quickViewProjectId)}/quick-view`}
+                className="inline-flex h-5 w-5 items-center justify-center rounded bg-[#e7f7ec] text-[#4bb16d] hover:bg-[#d9f1e1]"
+                title="View"
+                aria-label="View"
+              >
+                <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" aria-hidden>
+                  <path d="M2.2 10C3.8 7.4 6 6 10 6C14 6 16.2 7.4 17.8 10C16.2 12.6 14 14 10 14C6 14 3.8 12.6 2.2 10Z" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                  <circle cx="10" cy="10" r="1.8" fill="currentColor" />
+                </svg>
+              </a>
+            </div>
           ) : (
             <span className="text-xs text-[#98a4b5]">—</span>
           )}
@@ -465,12 +481,27 @@ export default function AssessorProjectManagementPage() {
           <button
             type="button"
             onClick={() => setShowFilters((prev) => !prev)}
-            className="inline-flex items-center gap-1.5 rounded bg-[#2f8f4e] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#267641]"
+            className="inline-flex items-center gap-1.5 rounded bg-[#6fa5d8] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#5f97cb]"
           >
             <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" aria-hidden>
               <path d="M3.5 4.5H16.5L11.5 10.3V15.2L8.5 16.7V10.3L3.5 4.5Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
             <span>Filters</span>
+          </button>
+        </div>
+        <div className="flex justify-end">
+          <button
+            type="button"
+            className="inline-flex items-center gap-1.5 rounded border border-[#ccd6e4] bg-white px-3 py-1.5 text-sm text-[#6b7280]"
+          >
+            <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" aria-hidden>
+              <path d="M4 5.5H16M4 10H16M4 14.5H16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <circle cx="6" cy="5.5" r="1.1" fill="currentColor" />
+              <circle cx="10" cy="10" r="1.1" fill="currentColor" />
+              <circle cx="14" cy="14.5" r="1.1" fill="currentColor" />
+            </svg>
+            <span>Bulk Actions</span>
+            <span className="text-xs">▾</span>
           </button>
         </div>
 

@@ -213,7 +213,7 @@ export default function AssessorProjectLaunchTrainingPage() {
         sessionTime: form.sessionTime,
         document: form.file,
       });
-      setToastMessage("Session document uploaded. The company can view it; they are notified by the server.");
+      setToastMessage("");
       const payload = await getFacilitatorProjectLaunchTraining(projectId);
       setData(payload);
       setSessionError(index, {});
