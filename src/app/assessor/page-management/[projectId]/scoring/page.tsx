@@ -87,6 +87,41 @@ function getSubmitLockStorageKey(projectId: string, criteriaId: string): string 
   return `assessor-final-submit-lock:${projectId}:${criteriaId || "default"}`;
 }
 
+/** Facilitator flow (process_type &quot;f&quot;) — quick view / profile. */
+function detectFacilitatorProcessType(quickView: Record<string, unknown>): boolean {
+  const profile = (quickView.profile as Record<string, unknown> | undefined) ?? {};
+  const project = (quickView.project as Record<string, unknown> | undefined) ?? {};
+  const company = (quickView.company as Record<string, unknown> | undefined) ?? {};
+  const raw =
+    profile.process_type ??
+    profile.processType ??
+    project.process_type ??
+    project.processType ??
+    company.process_type ??
+    company.processType ??
+    quickView.process_type ??
+    quickView.processType;
+  const text =
+    typeof raw === "string" || typeof raw === "number" ? String(raw).trim().toLowerCase() : "";
+  return text === "f";
+}
+
+/** True only when assessor final submit is recorded — not CII `final_submitted` on rows. */
+function isRowAssessorFinalSubmitted(rec: Record<string, unknown>): boolean {
+  const submitted =
+    rec.assessor_final_submitted ??
+    rec.is_assessor_final_submitted ??
+    rec.assessor_submitted ??
+    rec.assessor_approval;
+  if (submitted === true) return true;
+  if (typeof submitted === "number") return submitted === 1;
+  if (typeof submitted === "string") {
+    const s = submitted.trim();
+    return s === "1" || s.toLowerCase() === "true";
+  }
+  return false;
+}
+
 export default function AssessorProjectScoringPage() {
   const routeParams = useParams<{ projectId: string }>();
   const projectId = typeof routeParams?.projectId === "string" ? routeParams.projectId : "";
@@ -209,8 +244,12 @@ export default function AssessorProjectScoringPage() {
         const submitLockKey = getSubmitLockStorageKey(projectId, selectedCriteriaId);
         const sessionStorageRef = globalThis.window?.sessionStorage;
         const storedSubmitLock = sessionStorageRef?.getItem(submitLockKey) === "1";
-        const scoringPayload = await getAdminAssessmentScoring(projectId, selectedCriteriaId || undefined);
+        const [scoringPayload, quickViewPayload] = await Promise.all([
+          getAdminAssessmentScoring(projectId, selectedCriteriaId || undefined),
+          getCompanyProjectQuickView(projectId),
+        ]);
         if (cancelled) return;
+        const isFacilitatorProcess = detectFacilitatorProcessType(quickViewPayload);
         const scoringObj = (scoringPayload.scoring as Record<string, unknown> | undefined) ?? {};
         const scoringRows = toRows(scoringObj.rows ?? scoringObj.data ?? scoringPayload.rows ?? []).map((row) => ({
           ...row,
@@ -244,10 +283,7 @@ export default function AssessorProjectScoringPage() {
         setRemarksByParam(nextRemarks);
         setScoreErrorsByParam({});
         setRemarkErrorsByParam({});
-        const hasExistingAssessorData =
-          Object.values(nextScores).some((value) => value.trim() !== "") ||
-          Object.values(nextRemarks).some((value) => value.trim() !== "");
-        const allSubmitted =
+        const allSubmittedLegacy =
           scoringRows.length > 0 &&
           scoringRows.every((row) => {
             const rec = row as Record<string, unknown>;
@@ -261,10 +297,26 @@ export default function AssessorProjectScoringPage() {
             if (typeof submitted === "string") return submitted.trim() === "1" || submitted.trim().toLowerCase() === "true";
             return false;
           });
-        const shouldHideButtons = storedSubmitLock || allSubmitted || hasExistingAssessorData;
+        const allSubmittedFacilitator =
+          scoringRows.length > 0 &&
+          scoringRows.every((row) => isRowAssessorFinalSubmitted(row as Record<string, unknown>));
+        const allSubmitted = isFacilitatorProcess ? allSubmittedFacilitator : allSubmittedLegacy;
+        const facilitatorHasFinalScoringData =
+          Object.values(nextScores).some((value) => {
+            const n = Number(value);
+            return !Number.isNaN(n) && n > 0;
+          }) ||
+          Object.values(nextRemarks).some((value) => value.trim().length > 0);
+        /**
+         * Facilitator (f): hide Save only when assessor final flags are set — not CII row final_submitted.
+         * Ignore session lock for f so a stale lock cannot block Save after preliminary/CII completion.
+         */
+        const shouldHideButtons = isFacilitatorProcess
+          ? allSubmitted || facilitatorHasFinalScoringData
+          : storedSubmitLock || allSubmittedLegacy;
         setIsFinalSubmittedForCurrentCriteria(allSubmitted);
         setHideActionButtonsAfterSubmit(shouldHideButtons);
-        if (shouldHideButtons) {
+        if (!isFacilitatorProcess && shouldHideButtons) {
           sessionStorageRef?.setItem(submitLockKey, "1");
         }
         setError("");

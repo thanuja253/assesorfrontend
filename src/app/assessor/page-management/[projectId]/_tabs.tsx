@@ -10,16 +10,9 @@ type TabItem = {
   href: string;
 };
 
+/** Match admin-style tabs: blue when active, slate when idle. */
 function TabIcon({ tabKey, active }: Readonly<{ tabKey: string; active: boolean }>): ReactNode {
-  const iconPalette: Record<string, { active: string; idle: string }> = {
-    "quick-view": { active: "#2563eb", idle: "#93c5fd" },
-    "launch-training": { active: "#7c3aed", idle: "#c4b5fd" },
-    expenses: { active: "#ea580c", idle: "#fdba74" },
-    "assessment-checklist-documents": { active: "#0f766e", idle: "#99f6e4" },
-    scoring: { active: "#be185d", idle: "#f9a8d4" },
-  };
-  const palette = iconPalette[tabKey] ?? { active: "#334155", idle: "#cbd5e1" };
-  const color = active ? palette.active : palette.idle;
+  const color = active ? "#2563eb" : "#64748b";
   const commonProps = {
     width: 16,
     height: 16,
@@ -94,21 +87,23 @@ export default function ProjectTabs({ tabs }: Readonly<{ tabs: TabItem[] }>) {
   const pathname = usePathname();
 
   return (
-    <nav className="flex flex-wrap items-center gap-x-5 gap-y-2">
-      <span className="inline-flex h-4 w-4 items-center justify-center rounded-sm border border-[#ccd5e3] bg-white text-[10px] text-[#6f7f95]">
-        ✓
-      </span>
+    <nav className="flex flex-wrap items-end gap-x-1 gap-y-1 border-b border-slate-200">
       {tabs.map((tab) => {
-        const isActive = pathname === tab.href;
+        const isActive =
+          tab.key === "expenses"
+            ? pathname === tab.href || pathname.startsWith(`${tab.href}/`)
+            : pathname === tab.href;
         return (
           <Link
             key={tab.key}
             href={tab.href}
-            className={`inline-flex items-center gap-1.5 text-base font-medium ${
-              isActive ? "text-[#2f3a46]" : "text-[#677285] hover:text-[#2f3a46]"
+            className={`inline-flex items-center gap-2 whitespace-nowrap px-2 pb-2.5 pt-2 text-sm font-medium transition-colors ${
+              isActive
+                ? "border-b-2 border-blue-600 text-blue-600 -mb-px"
+                : "border-b-2 border-transparent text-slate-600 hover:text-slate-800"
             }`}
           >
-            <span className="inline-flex items-center justify-center">
+            <span className="inline-flex shrink-0 items-center justify-center [&_svg]:block">
               <TabIcon tabKey={tab.key} active={isActive} />
             </span>
             <span>{tab.label}</span>

@@ -332,6 +332,31 @@ export async function getCompanyProjectAssignments(projectId: string): Promise<R
   ]);
 }
 
+/** Registration payload (includes process_type, selected_facilitator). Admin path first; company fallback for assessor tokens. */
+export async function getAdminProjectRegistrationData(projectId: string): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await getJsonFromPaths([
+    `/api/admin/projects/${id}/registration-data`,
+    `/api/company/projects/${id}/registration-data`,
+  ]);
+}
+
+export async function getCompanyProjectFacilitatorRegistrationInfo(
+  projectId: string,
+): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await getJsonFromPaths([`/api/company/projects/${id}/facilitator-registration-info`]);
+}
+
+/** Facilitator process (process_type f) — proforma list from finance v2. */
+export async function getFacilitatorFinanceV2Proforma(projectId: string): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await getJsonFromPaths([
+    `/api/facilitators/projects/${id}/finance-v2/proforma`,
+    `/api/facilitator/projects/${id}/finance-v2/proforma`,
+  ]);
+}
+
 export async function getCompanyCoordinators(): Promise<Record<string, unknown>> {
   return await getJsonFromPaths([
     `/api/company/projects/coordinators`,

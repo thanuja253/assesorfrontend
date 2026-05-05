@@ -15,7 +15,7 @@ export default async function AssessorProjectLayout({
   const { projectId } = await params;
   return (
     <section className="space-y-3">
-      <div className="rounded border border-[#e6ebf3] bg-[#f8fafd] px-3 py-2">
+      <div className="bg-slate-100/90 px-4 py-1">
         <ProjectTabs tabs={TABS.map((tab) => ({ key: tab.key, label: tab.label, href: tab.href(projectId) }))} />
       </div>
 
