@@ -195,14 +195,17 @@ export function useFinanceInvoices(projectId: string, useFacilitatorApi: boolean
     const currentInvoiceId = invoiceId(selectedInvoice);
     const serverSupportingName = invoiceSupportingDocumentName(selectedInvoice);
     const shouldEdit = canEditPaymentForInvoice(selectedInvoice);
-    setTransId(invoiceTransactionId(selectedInvoice));
+    const statusLabel = invoiceStatusLabel(selectedInvoice).trim().toLowerCase();
+    const shouldResetFacilitatorRejectedFields =
+      useFacilitatorApi && shouldEdit && statusLabel === "rejected";
+    setTransId(shouldResetFacilitatorRejectedFields ? "" : invoiceTransactionId(selectedInvoice));
     setTransactionMode((asText(selectedInvoice.transaction_mode ?? selectedInvoice.payment_mode) || "Offline"));
     // In rejected/editable mode force selecting a fresh file for re-upload.
     setSupportingFileName(shouldEdit ? "" : serverSupportingName || localSupportingFileNameByInvoice[currentInvoiceId] || "");
     setSupportingFile(null);
     setHasTouchedTransId(false);
     setHasTouchedSupportingFile(false);
-  }, [selectedInvoiceId, selectedInvoice, localSupportingFileNameByInvoice]);
+  }, [selectedInvoiceId, selectedInvoice, localSupportingFileNameByInvoice, useFacilitatorApi]);
 
   const handleFileChange = (file: File | null) => {
     setHasTouchedSupportingFile(true);

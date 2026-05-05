@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, usePathname } from "next/navigation";
 import { AuthApiError } from "@/lib/auth-api";
 import {
   downloadAssessorFinalScoring,
   downloadAssessorSampleChecklistDocument,
   finalSubmitAssessorScore,
+  getAdminProjectCertificate,
   getAdminAssessmentScoring,
   getCompanyAssessmentCriteriaBySector,
   getCompanyProjectQuickView,
@@ -89,7 +90,9 @@ function getSubmitLockStorageKey(projectId: string, criteriaId: string): string 
 
 export default function AssessorProjectScoringPage() {
   const routeParams = useParams<{ projectId: string }>();
+  const pathname = usePathname();
   const projectId = typeof routeParams?.projectId === "string" ? routeParams.projectId : "";
+  const isFacilitatorProject = (pathname ?? "").includes("/facilitator/");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [group, setGroup] = useState("THANUJA");
@@ -106,6 +109,7 @@ export default function AssessorProjectScoringPage() {
   const [showFinalSubmitConfirm, setShowFinalSubmitConfirm] = useState(false);
   const [isFinalSubmittedForCurrentCriteria, setIsFinalSubmittedForCurrentCriteria] = useState(false);
   const [hideActionButtonsAfterSubmit, setHideActionButtonsAfterSubmit] = useState(false);
+  const [certificateData, setCertificateData] = useState<Record<string, unknown> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -200,6 +204,26 @@ export default function AssessorProjectScoringPage() {
 
   useEffect(() => {
     let cancelled = false;
+    if (!projectId || !isFacilitatorProject) {
+      setCertificateData(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+    getAdminProjectCertificate(projectId)
+      .then((payload) => {
+        if (!cancelled) setCertificateData(payload);
+      })
+      .catch(() => {
+        if (!cancelled) setCertificateData(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, isFacilitatorProject]);
+
+  useEffect(() => {
+    let cancelled = false;
     if (!projectId) return () => undefined;
     setLoading(true);
     setError("");
@@ -291,6 +315,21 @@ export default function AssessorProjectScoringPage() {
     const key = getRowKey(row, index);
     return sum + Number(scoresByParam[key] ?? 0);
   }, 0);
+  const certificateProfile =
+    (certificateData?.profile as Record<string, unknown> | undefined) ??
+    ((certificateData?.data as Record<string, unknown> | undefined)?.profile as Record<string, unknown> | undefined) ??
+    {};
+  const certificateLevelRaw =
+    certificateData?.certification_level ??
+    certificateData?.certificationLevel ??
+    (certificateData?.data as Record<string, unknown> | undefined)?.certification_level;
+  const certificateLevel = toStringSafe(certificateLevelRaw) || "—";
+  const percentageScore = toStringSafe(certificateData?.percentage_score ?? certificateData?.percentageScore) || "0";
+  const totalScore = toStringSafe(certificateData?.total_score ?? certificateData?.totalScore) || "0";
+  const maxPoints = toStringSafe(certificateData?.max_points ?? certificateData?.maxPoints) || "0";
+  const scoreBandStatus = toStringSafe(certificateProfile.score_band_status ?? certificateProfile.scoreBandStatus) || "—";
+  const certificateDocument =
+    toStringSafe(certificateProfile.certificate_document ?? certificateProfile.certificateDocument) || "—";
 
   const validateInlineBeforeSubmit = (): boolean => {
     if (!selectedCriteriaId || rows.length === 0) {
@@ -411,6 +450,19 @@ export default function AssessorProjectScoringPage() {
 
   return (
     <div className="space-y-3">
+      {isFacilitatorProject ? (
+        <SectionCard title="View Certificate">
+          <div className="grid grid-cols-1 gap-3 text-sm md:grid-cols-2">
+            <p><span className="font-semibold text-[#4f5a68]">Certificate Level:</span> {certificateLevel}</p>
+            <p><span className="font-semibold text-[#4f5a68]">Score Band Status:</span> {scoreBandStatus}</p>
+            <p><span className="font-semibold text-[#4f5a68]">Percentage Score:</span> {percentageScore}</p>
+            <p><span className="font-semibold text-[#4f5a68]">Total Score:</span> {totalScore}</p>
+            <p><span className="font-semibold text-[#4f5a68]">Max Points:</span> {maxPoints}</p>
+            <p className="truncate"><span className="font-semibold text-[#4f5a68]">Certificate Document:</span> {certificateDocument}</p>
+          </div>
+        </SectionCard>
+      ) : null}
+
       <div className="flex flex-wrap items-center justify-between gap-3 rounded border border-[#e5eaf3] bg-white px-5 py-3">
         <div className="flex gap-8 text-sm font-semibold text-[#2d3746]">
           <p>GROUP : {group}</p>

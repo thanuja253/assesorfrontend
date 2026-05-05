@@ -425,6 +425,13 @@ export async function getCompanyProjectQuickView(projectId: string): Promise<Rec
   ]);
 }
 
+export async function getAdminProjectPDetails(projectId: string): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await postJsonToPaths([
+    `/api/admin/projects/${id}/p-details`,
+  ], {}, "POST");
+}
+
 export async function getCompanyProjectPrimaryData(projectId: string): Promise<Record<string, unknown>> {
   const id = encodeURIComponent(ensureProjectId(projectId));
   return await getPrimaryDataJson(`/api/company/projects/${id}/primary-data`);
@@ -495,7 +502,11 @@ export async function getAdminApprovedAssessorsCatalog(): Promise<Record<string,
 /** Certificate data for facilitator quick-view milestone progression. */
 export async function getAdminProjectCertificate(projectId: string): Promise<Record<string, unknown>> {
   const id = encodeURIComponent(ensureProjectId(projectId));
+  const ts = Date.now();
   return await getJsonFromPaths([
+    `/api/admin/projects/${id}/certificate?_ts=${ts}`,
+    `/api/admin/upload_certificate/${id}?_ts=${ts}`,
+    `/api/admin/upload_certificate/${id}`,
     `/api/admin/projects/${id}/certificate`,
   ]);
 }

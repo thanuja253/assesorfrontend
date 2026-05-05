@@ -16,6 +16,7 @@ import {
   getCompanyCoordinators,
   getCompanyProjectAssignments,
   getCompanyProjectQuickView,
+  getAdminProjectPDetails,
   getAdminApprovedAssessorsCatalog,
   getAdminProjectCertificate,
   getCompanyAssessmentCriteriaBySector,
@@ -110,17 +111,39 @@ function resolveFirstSectorCriteriaId(criteriaPayload: Record<string, unknown>):
 
 function extractFacilitatorScoringBlock(payload: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!payload || typeof payload !== "object") return null;
+  const hasScoringSignals = (obj: Record<string, unknown>): boolean =>
+    "total_pre_assessment_score" in obj ||
+    "total_preliminary_score" in obj ||
+    "total_final_score" in obj ||
+    "total_score" in obj ||
+    "percentage_score" in obj ||
+    "criteria_projectscore" in obj ||
+    "high_projectscore" in obj ||
+    "max_score" in obj ||
+    "certification_level" in obj;
+
   const direct = payload.scoring;
   if (direct && typeof direct === "object" && !Array.isArray(direct)) {
     return direct as Record<string, unknown>;
+  }
+  if (hasScoringSignals(payload)) {
+    return payload;
   }
   const data = payload.data;
   if (data && typeof data === "object" && !Array.isArray(data)) {
     const d = data as Record<string, unknown>;
     const s = d.scoring;
     if (s && typeof s === "object" && !Array.isArray(s)) return s as Record<string, unknown>;
+    if (hasScoringSignals(d)) return d;
   }
   return null;
+}
+
+function hasNestedArrayEntries(value: unknown): boolean {
+  if (!Array.isArray(value)) return false;
+  return value.some((entry) =>
+    Array.isArray(entry) ? entry.length > 0 : entry !== null && entry !== undefined,
+  );
 }
 
 /** True when CII preliminary / pre-assessment scores exist (aligned with scoring page fields). */
@@ -130,10 +153,12 @@ function hasFacilitatorPreliminaryScoringDone(payload: Record<string, unknown> |
   const totalRaw =
     scoring.total_pre_assessment_score ??
     scoring.total_preliminary_score ??
+    scoring.total_score ??
     (scoring as Record<string, unknown>).total_pre_assessment ??
     (scoring as Record<string, unknown>).totalPreAssessmentScore;
   const totalNum = Number(totalRaw);
   if (!Number.isNaN(totalNum) && totalNum !== 0) return true;
+  if (hasNestedArrayEntries(scoring.criteria_projectscore)) return true;
 
   const rowsRaw = scoring.rows;
   if (!Array.isArray(rowsRaw)) return false;
@@ -162,9 +187,20 @@ function hasFacilitatorFinalScoringSubmitted(payload: Record<string, unknown> | 
   if (!scoring) return false;
   const totalRaw =
     scoring.total_final_score ??
+    scoring.total_score ??
     (scoring as Record<string, unknown>).totalFinalScore;
   const totalNum = Number(totalRaw);
   if (!Number.isNaN(totalNum) && totalNum > 0) return true;
+  const profile =
+    (scoring.profile as Record<string, unknown> | undefined) ??
+    ((scoring.data as Record<string, unknown> | undefined)?.profile as Record<string, unknown> | undefined) ??
+    {};
+  const scoreBandRaw = profile.score_band_status ?? profile.scoreBandStatus;
+  const scoreBandNum = Number(scoreBandRaw);
+  if (!Number.isNaN(scoreBandNum) && scoreBandNum === 1) return true;
+  const certificationRaw = scoring.certification_level ?? scoring.certificationLevel;
+  if (typeof certificationRaw === "string" && certificationRaw.trim().length > 0) return true;
+  if (hasNestedArrayEntries(scoring.criteria_projectscore)) return true;
 
   const rowsRaw = scoring.rows;
   if (!Array.isArray(rowsRaw)) return false;
@@ -954,6 +990,36 @@ function hasCoordinatorAssignedPayload(
   return hasId || hasEmail || hasName;
 }
 
+function hasPlaqueAndPrRaised(quickView: Record<string, unknown>): boolean {
+  const profile = (quickView.profile as Record<string, unknown> | undefined) ?? {};
+  const hasValue = (value: unknown): boolean => {
+    if (typeof value === "string") return value.trim().length > 0;
+    if (typeof value === "number") return String(value).trim().length > 0;
+    return false;
+  };
+  const prNo = profile.pr_no ?? quickView.pr_no;
+  const pNo = profile.p_no ?? quickView.p_no;
+  const prAmount = profile.pr_amount ?? quickView.pr_amount;
+  const pAmount = profile.p_amount ?? quickView.p_amount;
+  const prDate = profile.pr_date ?? quickView.pr_date;
+  const pDate = profile.p_date ?? quickView.p_date;
+  return hasValue(prNo) && hasValue(pNo) && hasValue(prAmount) && hasValue(pAmount) && hasValue(prDate) && hasValue(pDate);
+}
+
+function hasFeedbackReportUploaded(quickView: Record<string, unknown>): boolean {
+  const profile = (quickView.profile as Record<string, unknown> | undefined) ?? {};
+  const hasStr = (v: unknown): boolean => typeof v === "string" && v.trim().length > 0;
+  if (hasStr(profile.feedback_document ?? profile.feedbackDocument)) return true;
+  if (hasStr(profile.feedback_document_url ?? profile.feedbackDocumentUrl)) return true;
+  if (hasStr(quickView.feedback_document ?? quickView.feedback_document_url)) return true;
+  const data = quickView.data;
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const d = data as Record<string, unknown>;
+    if (hasStr(d.feedback_document_url ?? d.feedbackDocumentUrl)) return true;
+  }
+  return false;
+}
+
 function resolveFlowSteps(
   quickView: Record<string, unknown>,
   latestStep: unknown,
@@ -1016,6 +1082,38 @@ function resolveFlowSteps(
     typeof woPoNumberRaw === "string"
       ? woPoNumberRaw.trim().length > 0
       : typeof woPoNumberRaw === "number" && String(woPoNumberRaw).trim().length > 0;
+  const hasPlaquePrData = isFacilitatorProject && hasPlaqueAndPrRaised(quickView);
+  const hasFeedbackReport = isFacilitatorProject && hasFeedbackReportUploaded(quickView);
+
+  if (hasFeedbackReport) {
+    return {
+      latest: {
+        activity: "Feedback done by CII",
+        status: "Completed",
+        responsibility: "CII",
+      },
+      next: {
+        activity: "Certificate has been issued",
+        status: "Completed",
+        responsibility: "CII",
+      },
+    };
+  }
+
+  if (hasPlaquePrData) {
+    return {
+      latest: {
+        activity: "Plaque and PR has been done",
+        status: "Completed",
+        responsibility: "CII",
+      },
+      next: {
+        activity: "Feedback report need to upload by CII",
+        status: "Pending",
+        responsibility: "CII",
+      },
+    };
+  }
 
   if (woStatusLabel.includes("rejected")) {
     const uploaderRole = isFacilitatorProject ? "Facilitator" : "Consultant";
@@ -1114,15 +1212,78 @@ function resolveFlowSteps(
                   const filenameRaw = rec.filename ?? rec.file_name ?? rec.name;
                   return typeof filenameRaw === "string" && filenameRaw.trim().length > 0;
                 });
+                const latestPaymentHistoryRaw =
+                  latestInvoice?.offline_tran_doc_history ?? latestInvoice?.offlineTranDocHistory;
+                const latestPaymentHistory = Array.isArray(latestPaymentHistoryRaw) ? latestPaymentHistoryRaw : [];
+                const hasPaymentReuploadHistory = latestPaymentHistory.length > 1;
                 const isLatestInvoiceApprovalPending =
                   latestInvoiceApprovalText === "0" ||
                   latestInvoiceApprovalText === "pending" ||
                   latestInvoiceApprovalLabelText.includes("pending");
+                const isLatestInvoiceApprovalRejected =
+                  latestInvoiceApprovalText === "2" ||
+                  latestInvoiceApprovalText === "rejected" ||
+                  latestInvoiceApprovalLabelText.includes("rejected");
+                const isLatestInvoiceApprovalAccepted =
+                  latestInvoiceApprovalText === "1" ||
+                  latestInvoiceApprovalText === "approved" ||
+                  latestInvoiceApprovalLabelText.includes("approved");
+                if (
+                  hasInvoiceHistoryFilename &&
+                  isInvoicePaymentSubmitted(latestInvoice) &&
+                  isLatestInvoiceApprovalAccepted &&
+                  hasPaymentReuploadHistory
+                ) {
+                  return {
+                    latest: {
+                      activity: "Re-uploaded 2nd invoice has been accepted",
+                      status: "Approved",
+                      responsibility: "CII",
+                    },
+                    next: {
+                      activity: "Plaque and PQ need to be raised by CII",
+                      status: "Pending",
+                      responsibility: "CII",
+                    },
+                  };
+                }
+                if (
+                  hasInvoiceHistoryFilename &&
+                  isInvoicePaymentSubmitted(latestInvoice) &&
+                  isLatestInvoiceApprovalRejected
+                ) {
+                  return {
+                    latest: {
+                      activity: "2nd payment has been rejected by CII",
+                      status: "Rejected",
+                      responsibility: "CII",
+                    },
+                    next: {
+                      activity: "2nd payment needs to be re-uploaded by consultant",
+                      status: "Pending",
+                      responsibility: "Consultant",
+                    },
+                  };
+                }
                 if (
                   hasInvoiceHistoryFilename &&
                   isInvoicePaymentSubmitted(latestInvoice) &&
                   isLatestInvoiceApprovalPending
                 ) {
+                  if (hasPaymentReuploadHistory) {
+                    return {
+                      latest: {
+                        activity: "2nd invoice re-upload has been done",
+                        status: "Completed",
+                        responsibility: "Consultant",
+                      },
+                      next: {
+                        activity: "CII need to re-verify and approve or reject the payment",
+                        status: "Pending",
+                        responsibility: "CII",
+                      },
+                    };
+                  }
                   return {
                     latest: {
                       activity: "2nd invoice payment done by consultant",
@@ -1419,22 +1580,53 @@ export default function AssessorProjectQuickViewPage() {
       getCompanyProjectAssignments(projectId),
       getCompanyCoordinators(),
     ])
-      .then(([quickViewPayload, assignmentsPayload, coordinatorsPayload]) => {
+      .then(async ([quickViewPayload, assignmentsPayload, coordinatorsPayload]) => {
         if (cancelled) return;
-        setQuickView(quickViewPayload);
+        const isFacilitator = detectFacilitatorProject(quickViewPayload, pathname ?? "");
+        let effectiveQuickView = quickViewPayload;
+        if (isFacilitator) {
+          try {
+            const pDetailsPayload = await getAdminProjectPDetails(projectId);
+            if (pDetailsPayload && typeof pDetailsPayload === "object") {
+              const baseProfile =
+                quickViewPayload.profile &&
+                typeof quickViewPayload.profile === "object" &&
+                !Array.isArray(quickViewPayload.profile)
+                  ? (quickViewPayload.profile as Record<string, unknown>)
+                  : undefined;
+              const pDetailsProfile =
+                pDetailsPayload.profile &&
+                typeof pDetailsPayload.profile === "object" &&
+                !Array.isArray(pDetailsPayload.profile)
+                  ? (pDetailsPayload.profile as Record<string, unknown>)
+                  : undefined;
+              const mergedProfile: Record<string, unknown> = {};
+              if (baseProfile) Object.assign(mergedProfile, baseProfile);
+              if (pDetailsProfile) Object.assign(mergedProfile, pDetailsProfile);
+              effectiveQuickView = {
+                ...quickViewPayload,
+                ...pDetailsPayload,
+                profile: mergedProfile,
+              };
+            }
+          } catch {
+            // Continue with quick-view payload if p-details is unavailable.
+          }
+        }
+        setQuickView(effectiveQuickView);
         setAssignments(assignmentsPayload);
         const list = pickRecordList(coordinatorsPayload, ["items", "rows", "data", "coordinators", "result"]);
         setCoordinatorCatalog(list);
-        if (detectFacilitatorProject(quickViewPayload, pathname ?? "")) {
+        if (isFacilitator) {
           setFacilitatorAdminAssessors({ loaded: false, payload: null, failed: false });
           setFacilitatorAssessmentScoring({ loaded: false, payload: null, failed: false });
           setFacilitatorCertificateData({ loaded: false, payload: null, failed: false });
           const sectorId = String(
-            quickViewPayload.sector_id ??
-              quickViewPayload.sectorId ??
-              (quickViewPayload.profile as Record<string, unknown> | undefined)?.mst_sector_id ??
-              (quickViewPayload.sector as Record<string, unknown> | undefined)?.id ??
-              (quickViewPayload.project as Record<string, unknown> | undefined)?.sector_id ??
+            effectiveQuickView.sector_id ??
+              effectiveQuickView.sectorId ??
+              (effectiveQuickView.profile as Record<string, unknown> | undefined)?.mst_sector_id ??
+              (effectiveQuickView.sector as Record<string, unknown> | undefined)?.id ??
+              (effectiveQuickView.project as Record<string, unknown> | undefined)?.sector_id ??
               "",
           );
           if (!sectorId) {
@@ -1477,7 +1669,28 @@ export default function AssessorProjectQuickViewPage() {
             });
           getAdminProjectCertificate(projectId)
             .then((payload) => {
-              if (!cancelled) setFacilitatorCertificateData({ loaded: true, payload, failed: false });
+              if (cancelled) return;
+              setFacilitatorCertificateData({ loaded: true, payload, failed: false });
+              const certProfile =
+                (payload.profile as Record<string, unknown> | undefined) ??
+                ((payload.data as Record<string, unknown> | undefined)?.profile as Record<string, unknown> | undefined);
+              const feedbackDoc =
+                certProfile?.feedback_document ??
+                certProfile?.feedbackDocument ??
+                payload.feedback_document_url ??
+                payload.feedback_document;
+              if (typeof feedbackDoc === "string" && feedbackDoc.trim().length > 0) {
+                setQuickView((prev) => {
+                  const prevProfile =
+                    prev.profile && typeof prev.profile === "object" && !Array.isArray(prev.profile)
+                      ? (prev.profile as Record<string, unknown>)
+                      : {};
+                  return {
+                    ...prev,
+                    profile: { ...prevProfile, feedback_document: feedbackDoc.trim() },
+                  };
+                });
+              }
             })
             .catch(() => {
               if (!cancelled) setFacilitatorCertificateData({ loaded: true, payload: null, failed: true });
@@ -1822,6 +2035,13 @@ export default function AssessorProjectQuickViewPage() {
     facilitatorFinalScoringSubmitted,
     facilitatorCertificateUploaded,
   );
+  const facilitatorCertificateIssuedNextRow =
+    isFacilitatorProject && flowSteps.next.activity === "Certificate has been issued";
+  const facilitatorNextStepCardTitle = facilitatorCertificateIssuedNextRow ? "Certificate issued" : "Next Step";
+  const facilitatorNextRowCellBase =
+    facilitatorCertificateIssuedNextRow
+      ? "border border-[#86efac] bg-[#dcfce7] px-3 py-3 text-[#166534]"
+      : "border border-[#d9dde7] bg-[#fff700] px-3 py-3 text-[#4b5563]";
   const visibleMilestoneRows = milestoneRows
     .map((row, idx) => {
       const rowName =
@@ -1860,6 +2080,16 @@ export default function AssessorProjectQuickViewPage() {
     { label: "2nd invoice payment done by consultant", aliases: ["2nd invoice payment done by consultant", "proforma invoice", "pi tax invoice"], responsibility: "Consultant" },
     { label: "Supporting document needs to be uploaded", aliases: ["supporting document needs to be uploaded", "supporting document"], responsibility: "Consultant" },
     { label: "2nd invoice needs to be approved or rejected by Admin", aliases: ["2nd invoice needs to be approved or rejected by admin", "approve reject the proforma invoice", "cii need to approve reject"], responsibility: "Admin" },
+    { label: "2nd payment has been rejected by CII", aliases: ["2nd payment has been rejected by cii", "payment rejected by cii", "rejected"], responsibility: "CII" },
+    { label: "2nd payment needs to be re-uploaded by consultant", aliases: ["2nd payment needs to be re-uploaded by consultant", "re-upload payment by consultant", "payment reupload"], responsibility: "Consultant" },
+    { label: "2nd invoice re-upload has been done", aliases: ["2nd invoice re-upload has been done", "invoice reupload done", "payment reupload done"], responsibility: "Consultant" },
+    { label: "CII need to re-verify and approve or reject the payment", aliases: ["cii need to re-verify and approve or reject the payment", "reverify and approve or reject payment", "re verify payment"], responsibility: "CII" },
+    { label: "Re-uploaded 2nd invoice has been accepted", aliases: ["re-uploaded 2nd invoice has been accepted", "2nd invoice accepted after reupload", "reupload accepted"], responsibility: "CII" },
+    { label: "Plaque and PQ need to be raised by CII", aliases: ["plaque and pq need to be raised by cii", "plaque and pq", "pq raised by cii"], responsibility: "CII" },
+    { label: "Plaque and PR has been done", aliases: ["plaque and pr has been done", "plaque and pr done", "pr done"], responsibility: "CII" },
+    { label: "Feedback report need to upload by CII", aliases: ["feedback report need to upload by cii", "feedback report upload", "feedback report"], responsibility: "CII" },
+    { label: "Feedback done by CII", aliases: ["feedback done by cii", "feedback uploaded", "feedback report done"], responsibility: "CII" },
+    { label: "Certificate has been issued", aliases: ["certificate has been issued", "certificate issued", "certificate is issued"], responsibility: "CII" },
     { label: "Company needs to upload primary data form", aliases: ["company needs to upload primary data form", "primary data form"], responsibility: "Company" },
     { label: "CII accept or reject primary data form", aliases: ["cii accept or reject primary data form", "primary data accepted", "primary data rejected"], responsibility: "CII" },
   ];
@@ -1977,7 +2207,8 @@ export default function AssessorProjectQuickViewPage() {
 
       {isFacilitatorProject && showLatestNextStepSection ? (
         <div className="space-y-3">
-          <div className="grid gap-3 xl:grid-cols-2">
+          {facilitatorCertificateIssuedNextRow ? (
+            <div className="grid items-start gap-3 xl:grid-cols-2">
               <SectionCard title="Latest Step Completed">
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[320px] border-collapse text-sm">
@@ -1990,36 +2221,70 @@ export default function AssessorProjectQuickViewPage() {
                     </thead>
                     <tbody>
                       <tr>
-                        <td className="border border-[#d9dde7] px-3 py-3 font-medium text-[#4b5563]">{flowSteps.latest.activity}</td>
-                        <td className="border border-[#d9dde7] px-3 py-3 text-[#4b5563]">{flowSteps.latest.status}</td>
-                        <td className="border border-[#d9dde7] px-3 py-3 text-[#4b5563]">{flowSteps.latest.responsibility}</td>
+                        <td className="border border-[#d9dde7] px-3 py-3 font-medium text-[#4b5563]">
+                          {flowSteps.latest.activity}
+                        </td>
+                        <td className="border border-[#d9dde7] px-3 py-3 text-[#4b5563]">
+                          {flowSteps.latest.status}
+                        </td>
+                        <td className="border border-[#d9dde7] px-3 py-3 text-[#4b5563]">
+                          {flowSteps.latest.responsibility}
+                        </td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
               </SectionCard>
 
-              <SectionCard title="Next Step">
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[320px] border-collapse text-sm">
-                    <thead>
-                      <tr className="text-left text-[11px] font-semibold uppercase tracking-wide text-[#6b7280]">
-                        <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Activity</th>
-                        <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Status</th>
-                        <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Responsibility</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td className="border border-[#d9dde7] bg-[#fff700] px-3 py-3 font-medium text-[#4b5563]">{flowSteps.next.activity}</td>
-                        <td className="border border-[#d9dde7] bg-[#fff700] px-3 py-3 text-[#4b5563]">{flowSteps.next.status}</td>
-                        <td className="border border-[#d9dde7] bg-[#fff700] px-3 py-3 text-[#4b5563]">{flowSteps.next.responsibility}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </SectionCard>
-          </div>
+              <div className="self-start rounded border border-[#047857] bg-[#047857] px-3 py-1.5 text-xs font-semibold leading-tight text-white">
+                Certification Completed By Greenco Team.
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-3 xl:grid-cols-2">
+                <SectionCard title="Latest Step Completed">
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[320px] border-collapse text-sm">
+                      <thead>
+                        <tr className="text-left text-[11px] font-semibold uppercase tracking-wide text-[#6b7280]">
+                          <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Activity</th>
+                          <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Status</th>
+                          <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Responsibility</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <td className="border border-[#d9dde7] px-3 py-3 font-medium text-[#4b5563]">{flowSteps.latest.activity}</td>
+                          <td className="border border-[#d9dde7] px-3 py-3 text-[#4b5563]">{flowSteps.latest.status}</td>
+                          <td className="border border-[#d9dde7] px-3 py-3 text-[#4b5563]">{flowSteps.latest.responsibility}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </SectionCard>
+
+                <SectionCard title={facilitatorNextStepCardTitle}>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[320px] border-collapse text-sm">
+                      <thead>
+                        <tr className="text-left text-[11px] font-semibold uppercase tracking-wide text-[#6b7280]">
+                          <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Activity</th>
+                          <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Status</th>
+                          <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Responsibility</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <td className={`font-medium ${facilitatorNextRowCellBase}`}>{flowSteps.next.activity}</td>
+                          <td className={facilitatorNextRowCellBase}>{flowSteps.next.status}</td>
+                          <td className={facilitatorNextRowCellBase}>{flowSteps.next.responsibility}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </SectionCard>
+            </div>
+          )}
         </div>
       ) : null}
 
