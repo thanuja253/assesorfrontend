@@ -1,10 +1,12 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import {
   asText,
   invoiceDocName,
   invoiceDocUrl,
   invoiceId,
+  invoiceStatusLabel,
   invoiceSupportingDocumentName,
   invoiceTitle,
   type ExpenseInvoiceView,
@@ -67,14 +69,54 @@ export default function InvoiceDetailCard({
   const totalAmountText = asText(selectedInvoice.total_amount) || amountText || "—";
   const resolvedSupportingName = asText(supportingFileName) || invoiceSupportingDocumentName(selectedInvoice) || "—";
   const normalizedStatus = (statusLabel || "Pending").trim().toLowerCase();
-  const statusChipClass =
-    normalizedStatus.includes("pending")
-      ? "bg-[#fff7cc] text-[#8a6d1d] border-[#f5de9b]"
-      : normalizedStatus.includes("reject")
-        ? "bg-[#ffe8e8] text-[#b42318] border-[#f5b2b2]"
-        : normalizedStatus.includes("accept") || normalizedStatus.includes("approve")
-          ? "bg-[#e9f9ef] text-[#1f7a40] border-[#b9e7c7]"
-          : "bg-[#f1f5f9] text-[#334155] border-[#dbe3ef]";
+  const resolveStatusChipClass = (label: string): string => {
+    const normalized = label.trim().toLowerCase();
+    if (normalized.includes("pending")) return "bg-[#fff7cc] text-[#8a6d1d] border-[#f5de9b]";
+    if (normalized.includes("reject")) return "bg-[#ffe8e8] text-[#b42318] border-[#f5b2b2]";
+    if (normalized.includes("accept") || normalized.includes("approve")) {
+      return "bg-[#e9f9ef] text-[#1f7a40] border-[#b9e7c7]";
+    }
+    return "bg-[#f1f5f9] text-[#334155] border-[#dbe3ef]";
+  };
+  const statusChipClass = resolveStatusChipClass(normalizedStatus);
+  const parseInvoiceTime = (invoice: ExpenseInvoiceView): number => {
+    const raw = asText((invoice as Record<string, unknown>).updated_at ?? (invoice as Record<string, unknown>).created_at);
+    if (!raw) return 0;
+    const t = Date.parse(raw);
+    return Number.isFinite(t) ? t : 0;
+  };
+  const facilitatorInvoiceOptions = [...invoices].sort((a, b) => parseInvoiceTime(b) - parseInvoiceTime(a));
+  const uniqueFacilitatorInvoiceOptions: ExpenseInvoiceView[] = [];
+  const seenOptionKeys = new Set<string>();
+  for (const invoice of facilitatorInvoiceOptions) {
+    const id = invoiceId(invoice);
+    const title = invoiceTitle(invoice);
+    const status = invoiceStatusLabel(invoice);
+    const key = `${id || title}|${status}`;
+    if (seenOptionKeys.has(key)) continue;
+    seenOptionKeys.add(key);
+    uniqueFacilitatorInvoiceOptions.push(invoice);
+  }
+  const [isInvoicePickerOpen, setIsInvoicePickerOpen] = useState(false);
+  const invoicePickerRef = useRef<HTMLDivElement | null>(null);
+  const selectedInvoiceOption =
+    uniqueFacilitatorInvoiceOptions.find((invoice) => invoiceId(invoice) === selectedInvoiceId) ??
+    uniqueFacilitatorInvoiceOptions[0] ??
+    null;
+
+  useEffect(() => {
+    if (!isInvoicePickerOpen) return;
+    const handleOutsideClick = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (invoicePickerRef.current && target && !invoicePickerRef.current.contains(target)) {
+        setIsInvoicePickerOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick);
+    };
+  }, [isInvoicePickerOpen]);
 
   if (facilitatorMode) {
     return (
@@ -84,6 +126,52 @@ export default function InvoiceDetailCard({
         </div>
 
         <div className="space-y-3 px-4 py-4 text-[13px]">
+          {uniqueFacilitatorInvoiceOptions.length > 1 ? (
+            <div className="flex items-center justify-end gap-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-[#64748b]">
+                Select Invoice
+              </p>
+              <div ref={invoicePickerRef} className="relative w-[260px]">
+                <button
+                  type="button"
+                  onClick={() => setIsInvoicePickerOpen((prev) => !prev)}
+                  className="flex h-8 w-full items-center justify-between rounded border border-[#cdd8e8] bg-white px-2 text-xs text-[#334155]"
+                >
+                  <span className="truncate">
+                    {selectedInvoiceOption
+                      ? invoiceTitle(selectedInvoiceOption)
+                      : "Select invoice"}
+                  </span>
+                  <span className="ml-2 text-[10px] text-[#64748b]">▼</span>
+                </button>
+                {isInvoicePickerOpen ? (
+                  <div className="absolute right-0 z-20 mt-1 max-h-52 w-full overflow-y-auto rounded border border-[#cdd8e8] bg-white shadow-lg">
+                    {uniqueFacilitatorInvoiceOptions.map((invoice, index) => {
+                      const id = invoiceId(invoice);
+                      const title = invoiceTitle(invoice);
+                      const isSelected = id === selectedInvoiceId;
+                      return (
+                        <button
+                          key={id || `${title}-${index}`}
+                          type="button"
+                          onClick={() => {
+                            onInvoiceChange(id);
+                            setIsInvoicePickerOpen(false);
+                          }}
+                          className={`flex w-full items-center px-2 py-1.5 text-left text-xs ${
+                            isSelected ? "bg-[#f1f5f9] text-[#0f172a]" : "text-[#334155] hover:bg-[#f8fafc]"
+                          }`}
+                        >
+                          {title}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
           <div className="grid grid-cols-[220px_16px_minmax(0,1fr)] items-center gap-2">
             <span className="text-[#111827]">Uploaded Fee Invoice</span><span>:</span>
             <div className="flex items-center gap-2">

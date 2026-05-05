@@ -492,6 +492,14 @@ export async function getAdminApprovedAssessorsCatalog(): Promise<Record<string,
   ]);
 }
 
+/** Certificate data for facilitator quick-view milestone progression. */
+export async function getAdminProjectCertificate(projectId: string): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await getJsonFromPaths([
+    `/api/admin/projects/${id}/certificate`,
+  ]);
+}
+
 export async function getCompanyRegisterInfo(): Promise<Record<string, unknown>> {
   return await getJsonFromPaths([
     `/api/company/register-info`,

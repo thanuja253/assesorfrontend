@@ -17,6 +17,7 @@ import {
   getCompanyProjectAssignments,
   getCompanyProjectQuickView,
   getAdminApprovedAssessorsCatalog,
+  getAdminProjectCertificate,
   getCompanyAssessmentCriteriaBySector,
   getAdminAssessmentScoring,
 } from "@/lib/assessor-project-api";
@@ -153,6 +154,45 @@ function hasFacilitatorPreliminaryScoringDone(payload: Record<string, unknown> |
     }
   }
   return false;
+}
+
+/** True when assessor final scoring exists in scoring payload (final_score / total_final_score > 0). */
+function hasFacilitatorFinalScoringSubmitted(payload: Record<string, unknown> | null): boolean {
+  const scoring = extractFacilitatorScoringBlock(payload);
+  if (!scoring) return false;
+  const totalRaw =
+    scoring.total_final_score ??
+    (scoring as Record<string, unknown>).totalFinalScore;
+  const totalNum = Number(totalRaw);
+  if (!Number.isNaN(totalNum) && totalNum > 0) return true;
+
+  const rowsRaw = scoring.rows;
+  if (!Array.isArray(rowsRaw)) return false;
+  for (const row of rowsRaw) {
+    if (!row || typeof row !== "object") continue;
+    const r = row as Record<string, unknown>;
+    const candidates = [
+      r.final_score,
+      r.assessor_score,
+      r.assessment_score,
+      r.assesment_score,
+    ];
+    for (const c of candidates) {
+      const n = Number(c);
+      if (!Number.isNaN(n) && n > 0) return true;
+    }
+  }
+  return false;
+}
+
+function hasFacilitatorCertificateUploaded(payload: Record<string, unknown> | null): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const profile =
+    (payload.profile as Record<string, unknown> | undefined) ??
+    ((payload.data as Record<string, unknown> | undefined)?.profile as Record<string, unknown> | undefined) ??
+    {};
+  const certRaw = profile.certificate_document ?? profile.certificateDocument;
+  return typeof certRaw === "string" && certRaw.trim().length > 0;
 }
 
 function normalizeStepText(value: string): string {
@@ -383,6 +423,122 @@ function hasApprovedProformaAfterReupload(data: Record<string, unknown> | null):
   });
 }
 
+function hasAnyRejectedProformaApproval(
+  financeInvoicesData: Record<string, unknown> | null,
+  proformaApprovalData: Record<string, unknown> | null,
+): boolean {
+  if (financeInvoicesData && typeof financeInvoicesData === "object") {
+    const invoicesRaw = financeInvoicesData.invoices;
+    if (Array.isArray(invoicesRaw)) {
+      for (const item of invoicesRaw) {
+        if (!item || typeof item !== "object") continue;
+        const rec = item as Record<string, unknown>;
+        const typeRaw = rec.invoice_type ?? rec.invoiceType ?? rec.payment_for_label;
+        const typeText =
+          typeof typeRaw === "string" || typeof typeRaw === "number"
+            ? String(typeRaw).trim().toLowerCase()
+            : "";
+        if (!(typeText.includes("proforma") || typeText.includes("pro forma"))) continue;
+        const approvalRaw = rec.approval_status ?? rec.approvalStatus;
+        const approvalText =
+          typeof approvalRaw === "string" || typeof approvalRaw === "number"
+            ? String(approvalRaw).trim().toLowerCase()
+            : "";
+        const labelRaw = rec.approval_status_label ?? rec.approvalStatusLabel;
+        const labelText =
+          typeof labelRaw === "string" || typeof labelRaw === "number"
+            ? String(labelRaw).trim().toLowerCase()
+            : "";
+        if (approvalText === "2" || approvalText === "rejected" || labelText.includes("rejected")) {
+          return true;
+        }
+      }
+    }
+  }
+
+  const approvalStatusRaw =
+    proformaApprovalData?.approval_status ?? proformaApprovalData?.approvalStatus;
+  const approvalStatusText =
+    typeof approvalStatusRaw === "string" || typeof approvalStatusRaw === "number"
+      ? String(approvalStatusRaw).trim().toLowerCase()
+      : "";
+  const approvalLabelRaw =
+    proformaApprovalData?.approval_status_label ?? proformaApprovalData?.approvalStatusLabel;
+  const approvalLabelText =
+    typeof approvalLabelRaw === "string" || typeof approvalLabelRaw === "number"
+      ? String(approvalLabelRaw).trim().toLowerCase()
+      : "";
+  return (
+    approvalStatusText === "2" ||
+    approvalStatusText === "rejected" ||
+    approvalLabelText.includes("rejected")
+  );
+}
+
+function toEpochMs(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return 0;
+  const t = Date.parse(value);
+  return Number.isFinite(t) ? t : 0;
+}
+
+function getLatestFinanceInvoice(data: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!data || typeof data !== "object") return null;
+  const invoicesRaw = data.invoices;
+  if (!Array.isArray(invoicesRaw) || invoicesRaw.length === 0) return null;
+  const invoices = invoicesRaw.filter((item): item is Record<string, unknown> =>
+    Boolean(item && typeof item === "object" && !Array.isArray(item)),
+  );
+  if (invoices.length === 0) return null;
+  return invoices.reduce((latest, current) => {
+    const latestTs = toEpochMs(latest.updated_at ?? latest.created_at);
+    const currentTs = toEpochMs(current.updated_at ?? current.created_at);
+    return currentTs > latestTs ? current : latest;
+  });
+}
+
+function hasInvoiceDocument(invoice: Record<string, unknown> | null): boolean {
+  if (!invoice) return false;
+  const direct = invoice.invoice_document ?? invoice.document_url ?? invoice.file_url ?? invoice.url;
+  if (typeof direct === "string" && direct.trim().length > 0) return true;
+  const history = invoice.invoice_document_history;
+  return Array.isArray(history) && history.length > 0;
+}
+
+function isInvoicePaymentSubmitted(invoice: Record<string, unknown> | null): boolean {
+  if (!invoice) return false;
+  const paymentStatusRaw = invoice.payment_status ?? invoice.paymentStatus;
+  const paymentStatusText =
+    typeof paymentStatusRaw === "string" || typeof paymentStatusRaw === "number"
+      ? String(paymentStatusRaw).trim().toLowerCase()
+      : "";
+  if (paymentStatusText === "1" || paymentStatusText === "paid") return true;
+
+  const paidAmountRaw = invoice.paid_amount ?? invoice.paidAmount;
+  const paidAmount =
+    typeof paidAmountRaw === "number"
+      ? paidAmountRaw
+      : typeof paidAmountRaw === "string"
+        ? Number.parseFloat(paidAmountRaw)
+        : Number.NaN;
+  if (!Number.isNaN(paidAmount) && paidAmount > 0) return true;
+
+  const dueAmountRaw = invoice.due_amount ?? invoice.dueAmount;
+  const dueAmount =
+    typeof dueAmountRaw === "number"
+      ? dueAmountRaw
+      : typeof dueAmountRaw === "string"
+        ? Number.parseFloat(dueAmountRaw)
+        : Number.NaN;
+  if (!Number.isNaN(dueAmount) && dueAmount === 0) return true;
+
+  const transIdRaw = invoice.trans_id ?? invoice.transaction_id ?? invoice.utr_number;
+  const hasTransId = typeof transIdRaw === "string" && transIdRaw.trim().length > 0;
+  const offlineDocRaw = invoice.offline_tran_doc ?? invoice.offline_transaction_document;
+  const hasOfflineDoc = typeof offlineDocRaw === "string" && offlineDocRaw.trim().length > 0;
+  return hasTransId || hasOfflineDoc;
+}
+
 function hasPrimaryDataFilledPayload(data: Record<string, unknown> | null): boolean {
   if (!data || typeof data !== "object") return false;
   const root = unwrapPrimaryDataRoot(data);
@@ -572,6 +728,8 @@ function resolveFacilitatorPrimaryDataFlowSteps(
   checklistDocumentsData: Record<string, unknown> | null,
   facilitatorAssessorAssignmentDone: boolean,
   facilitatorPreliminaryScoringDone: boolean,
+  facilitatorFinalScoringSubmitted: boolean,
+  facilitatorCertificateUploaded: boolean,
 ): {
   latest: { activity: string; status: string; responsibility: string };
   next: { activity: string; status: string; responsibility: string };
@@ -614,6 +772,38 @@ function resolveFacilitatorPrimaryDataFlowSteps(
         };
       }
       if (allChecklistAccepted && hasAllChecklistDocumentsUploaded(checklistDocumentsData)) {
+        if (
+          facilitatorAssessorAssignmentDone &&
+          facilitatorPreliminaryScoringDone &&
+          facilitatorFinalScoringSubmitted
+        ) {
+          if (facilitatorCertificateUploaded) {
+            return {
+              latest: {
+                activity: "Upload certificate is done",
+                status: "Completed",
+                responsibility: "CII",
+              },
+              next: {
+                activity: "2nd proforma need to be uploaded",
+                status: "Pending",
+                responsibility: "CII",
+              },
+            };
+          }
+          return {
+            latest: {
+              activity: "Final scoring submitted by assessor",
+              status: "Completed",
+              responsibility: "Assessor",
+            },
+            next: {
+              activity: "Upload certificate is pending by CII",
+              status: "Pending",
+              responsibility: "CII",
+            },
+          };
+        }
         if (facilitatorAssessorAssignmentDone && facilitatorPreliminaryScoringDone) {
           return {
             latest: {
@@ -780,6 +970,8 @@ function resolveFlowSteps(
   isFacilitatorProject: boolean,
   facilitatorAssessorAssignmentDone: boolean,
   facilitatorPreliminaryScoringDone: boolean,
+  facilitatorFinalScoringSubmitted: boolean,
+  facilitatorCertificateUploaded: boolean,
 ): {
   latest: { activity: string; status: string; responsibility: string };
   next: { activity: string; status: string; responsibility: string };
@@ -874,22 +1066,80 @@ function resolveFlowSteps(
           if (coordinatorAssigned) {
             if (hasLaunchTrainingPayload(launchTrainingData)) {
               if (hasProformaDocumentPayload(financeInvoicesData)) {
-                const approvalStatusRaw =
-                  proformaApprovalData?.approval_status ?? proformaApprovalData?.approvalStatus;
-                const approvalStatusText =
-                  typeof approvalStatusRaw === "string" || typeof approvalStatusRaw === "number"
-                    ? String(approvalStatusRaw).trim().toLowerCase()
+                const latestInvoice = getLatestFinanceInvoice(financeInvoicesData);
+                const latestInvoiceTypeRaw =
+                  latestInvoice?.invoice_type ?? latestInvoice?.invoiceType ?? latestInvoice?.payment_for_label;
+                const latestInvoiceType =
+                  typeof latestInvoiceTypeRaw === "string" || typeof latestInvoiceTypeRaw === "number"
+                    ? String(latestInvoiceTypeRaw).trim().toLowerCase()
+                    : "invoice";
+                const latestInvoiceLabel = latestInvoiceType.includes("tax")
+                  ? "tax invoice"
+                  : latestInvoiceType.includes("proforma") || latestInvoiceType.includes("pro forma")
+                    ? "proforma invoice"
+                    : "invoice";
+
+                if (hasInvoiceDocument(latestInvoice) && !isInvoicePaymentSubmitted(latestInvoice)) {
+                  return {
+                    latest: {
+                      activity: `${latestInvoiceLabel.charAt(0).toUpperCase()}${latestInvoiceLabel.slice(1)} uploaded by CII`,
+                      status: "Completed",
+                      responsibility: "CII",
+                    },
+                    next: {
+                      activity: `Consultant payment pending for ${latestInvoiceLabel}`,
+                      status: "Pending",
+                      responsibility: "Consultant",
+                    },
+                  };
+                }
+                const latestInvoiceApprovalRaw =
+                  latestInvoice?.approval_status ?? latestInvoice?.approvalStatus;
+                const latestInvoiceApprovalText =
+                  typeof latestInvoiceApprovalRaw === "string" || typeof latestInvoiceApprovalRaw === "number"
+                    ? String(latestInvoiceApprovalRaw).trim().toLowerCase()
                     : "";
-                const approvalLabelRaw =
-                  proformaApprovalData?.approval_status_label ?? proformaApprovalData?.approvalStatusLabel;
-                const approvalLabelText =
-                  typeof approvalLabelRaw === "string" || typeof approvalLabelRaw === "number"
-                    ? String(approvalLabelRaw).trim().toLowerCase()
+                const latestInvoiceApprovalLabelRaw =
+                  latestInvoice?.approval_status_label ?? latestInvoice?.approvalStatusLabel;
+                const latestInvoiceApprovalLabelText =
+                  typeof latestInvoiceApprovalLabelRaw === "string" || typeof latestInvoiceApprovalLabelRaw === "number"
+                    ? String(latestInvoiceApprovalLabelRaw).trim().toLowerCase()
                     : "";
-                const isProformaRejected =
-                  approvalStatusText === "2" ||
-                  approvalStatusText === "rejected" ||
-                  approvalLabelText.includes("rejected");
+                const latestInvoiceHistoryRaw =
+                  latestInvoice?.invoice_document_history ?? latestInvoice?.invoiceDocumentHistory;
+                const latestInvoiceHistory = Array.isArray(latestInvoiceHistoryRaw) ? latestInvoiceHistoryRaw : [];
+                const hasInvoiceHistoryFilename = latestInvoiceHistory.some((entry) => {
+                  if (!entry || typeof entry !== "object") return false;
+                  const rec = entry as Record<string, unknown>;
+                  const filenameRaw = rec.filename ?? rec.file_name ?? rec.name;
+                  return typeof filenameRaw === "string" && filenameRaw.trim().length > 0;
+                });
+                const isLatestInvoiceApprovalPending =
+                  latestInvoiceApprovalText === "0" ||
+                  latestInvoiceApprovalText === "pending" ||
+                  latestInvoiceApprovalLabelText.includes("pending");
+                if (
+                  hasInvoiceHistoryFilename &&
+                  isInvoicePaymentSubmitted(latestInvoice) &&
+                  isLatestInvoiceApprovalPending
+                ) {
+                  return {
+                    latest: {
+                      activity: "2nd invoice payment done by consultant",
+                      status: "Completed",
+                      responsibility: "Consultant",
+                    },
+                    next: {
+                      activity: "2nd invoice needs to be approved or rejected by Admin",
+                      status: "Pending",
+                      responsibility: "Admin",
+                    },
+                  };
+                }
+                const isProformaRejected = hasAnyRejectedProformaApproval(
+                  financeInvoicesData,
+                  proformaApprovalData,
+                );
                 if (isProformaRejected) {
                   return {
                     latest: {
@@ -911,6 +1161,8 @@ function resolveFlowSteps(
                       checklistDocumentsData,
                       facilitatorAssessorAssignmentDone,
                       facilitatorPreliminaryScoringDone,
+                      facilitatorFinalScoringSubmitted,
+                      facilitatorCertificateUploaded,
                     );
                   }
                   return {
@@ -943,25 +1195,25 @@ function resolveFlowSteps(
                 if (hasProformaPaymentSubmittedPayload(financeInvoicesData)) {
                   return {
                     latest: {
-                      activity: "Consultant paid proforma invoice",
+                      activity: "2nd invoice payment done by consultant",
                       status: "Completed",
                       responsibility: "Consultant",
                     },
                     next: {
-                      activity: "CII need to approve/reject the proforma invoice",
+                      activity: "2nd invoice needs to be approved or rejected by Admin",
                       status: "Pending",
-                      responsibility: "CII",
+                      responsibility: "Admin",
                     },
                   };
                 }
                 return {
                   latest: {
-                    activity: "CII uploaded the proforma invoice",
+                    activity: "Proforma invoice uploaded by CII",
                     status: "Completed",
                     responsibility: "CII",
                   },
                   next: {
-                    activity: "Supporting document needs to be uploaded by consultant",
+                    activity: "Consultant to upload supporting document",
                     status: "Pending",
                     responsibility: "Consultant",
                   },
@@ -1129,6 +1381,11 @@ export default function AssessorProjectQuickViewPage() {
     payload: Record<string, unknown> | null;
     failed: boolean;
   }>({ loaded: false, payload: null, failed: false });
+  const [facilitatorCertificateData, setFacilitatorCertificateData] = useState<{
+    loaded: boolean;
+    payload: Record<string, unknown> | null;
+    failed: boolean;
+  }>({ loaded: false, payload: null, failed: false });
   const [coordinatorCatalog, setCoordinatorCatalog] = useState<Record<string, unknown>[]>([]);
 
   useEffect(() => {
@@ -1148,6 +1405,7 @@ export default function AssessorProjectQuickViewPage() {
       setChecklistDocumentsData(null);
       setFacilitatorAdminAssessors({ loaded: false, payload: null, failed: false });
       setFacilitatorAssessmentScoring({ loaded: false, payload: null, failed: false });
+      setFacilitatorCertificateData({ loaded: false, payload: null, failed: false });
       setCoordinatorCatalog([]);
       setLoading(false);
       return () => {
@@ -1170,6 +1428,7 @@ export default function AssessorProjectQuickViewPage() {
         if (detectFacilitatorProject(quickViewPayload, pathname ?? "")) {
           setFacilitatorAdminAssessors({ loaded: false, payload: null, failed: false });
           setFacilitatorAssessmentScoring({ loaded: false, payload: null, failed: false });
+          setFacilitatorCertificateData({ loaded: false, payload: null, failed: false });
           const sectorId = String(
             quickViewPayload.sector_id ??
               quickViewPayload.sectorId ??
@@ -1216,6 +1475,13 @@ export default function AssessorProjectQuickViewPage() {
             .catch(() => {
               if (!cancelled) setFacilitatorAdminAssessors({ loaded: true, payload: null, failed: true });
             });
+          getAdminProjectCertificate(projectId)
+            .then((payload) => {
+              if (!cancelled) setFacilitatorCertificateData({ loaded: true, payload, failed: false });
+            })
+            .catch(() => {
+              if (!cancelled) setFacilitatorCertificateData({ loaded: true, payload: null, failed: true });
+            });
           getCompanyProjectFacilitatorRegistrationInfo(projectId)
             .then((regPayload) => {
               if (!cancelled) setFacilitatorRegistration(regPayload);
@@ -1247,10 +1513,9 @@ export default function AssessorProjectQuickViewPage() {
           getFacilitatorFinanceInvoices(projectId)
             .then((payload) => {
               if (cancelled) return;
-              setFinanceInvoicesData(payload);
               const invoicesRaw = payload.invoices;
               const invoices = Array.isArray(invoicesRaw) ? invoicesRaw : [];
-              const proformaInvoice = invoices.find((item) => {
+              const proformaInvoices = invoices.filter((item) => {
                 if (!item || typeof item !== "object") return false;
                 const rec = item as Record<string, unknown>;
                 const typeRaw = rec.invoice_type ?? rec.invoiceType ?? rec.payment_for_label;
@@ -1259,22 +1524,72 @@ export default function AssessorProjectQuickViewPage() {
                     ? String(typeRaw).trim().toLowerCase()
                     : "";
                 return typeText.includes("proforma") || typeText.includes("pro forma");
-              }) as Record<string, unknown> | undefined;
-              const proformaIdRaw = proformaInvoice?.id ?? proformaInvoice?._id ?? proformaInvoice?.invoice_id;
-              const proformaId =
-                typeof proformaIdRaw === "string" || typeof proformaIdRaw === "number"
-                  ? String(proformaIdRaw).trim()
-                  : "";
-              if (!proformaId) {
+              }) as Record<string, unknown>[];
+              if (proformaInvoices.length === 0) {
+                setFinanceInvoicesData(payload);
                 setProformaApprovalData(null);
                 return;
               }
-              getFacilitatorFinanceInvoiceApprovalStatus(projectId, proformaId, "proforma")
-                .then((approvalPayload) => {
-                  if (!cancelled) setProformaApprovalData(approvalPayload);
+
+              const proformaIds = proformaInvoices
+                .map((invoice) => {
+                  const idRaw = invoice.id ?? invoice._id ?? invoice.invoice_id;
+                  return typeof idRaw === "string" || typeof idRaw === "number" ? String(idRaw).trim() : "";
+                })
+                .filter((id): id is string => Boolean(id));
+
+              if (proformaIds.length === 0) {
+                setFinanceInvoicesData(payload);
+                setProformaApprovalData(null);
+                return;
+              }
+
+              Promise.allSettled(
+                proformaIds.map((invoiceId) =>
+                  getFacilitatorFinanceInvoiceApprovalStatus(projectId, invoiceId, "proforma")
+                    .then((approvalPayload) => ({ invoiceId, approvalPayload })),
+                ),
+              )
+                .then((results) => {
+                  if (cancelled) return;
+                  let latestApprovalPayload: Record<string, unknown> | null = null;
+                  const approvalByInvoiceId = new Map<string, Record<string, unknown>>();
+                  for (const result of results) {
+                    if (result.status !== "fulfilled") continue;
+                    const approval = result.value.approvalPayload;
+                    if (!approval || typeof approval !== "object") continue;
+                    const approvalRecord = approval as Record<string, unknown>;
+                    approvalByInvoiceId.set(result.value.invoiceId, approvalRecord);
+                    latestApprovalPayload = approvalRecord;
+                  }
+
+                  const mergedInvoices = invoices.map((item) => {
+                    if (!item || typeof item !== "object") return item;
+                    const rec = item as Record<string, unknown>;
+                    const idRaw = rec.id ?? rec._id ?? rec.invoice_id;
+                    const invoiceId =
+                      typeof idRaw === "string" || typeof idRaw === "number" ? String(idRaw).trim() : "";
+                    if (!invoiceId) return rec;
+                    const approval = approvalByInvoiceId.get(invoiceId);
+                    if (!approval) return rec;
+                    return {
+                      ...rec,
+                      approval_status: approval.approval_status ?? rec.approval_status,
+                      approval_status_label: approval.approval_status_label ?? rec.approval_status_label,
+                      approval_status_color: approval.approval_status_color ?? rec.approval_status_color,
+                      remarks: approval.remarks ?? rec.remarks,
+                      rejected_remarks: approval.rejected_remarks ?? rec.rejected_remarks,
+                    };
+                  });
+
+                  setFinanceInvoicesData({ ...payload, invoices: mergedInvoices });
+                  setProformaApprovalData(latestApprovalPayload);
                 })
                 .catch(() => {
-                  if (!cancelled) setProformaApprovalData(null);
+                  if (!cancelled) {
+                    setFinanceInvoicesData(payload);
+                    setProformaApprovalData(null);
+                  }
                 });
             })
             .catch(() => {
@@ -1326,6 +1641,7 @@ export default function AssessorProjectQuickViewPage() {
           setChecklistDocumentsData(null);
           setFacilitatorAdminAssessors({ loaded: false, payload: null, failed: false });
           setFacilitatorAssessmentScoring({ loaded: false, payload: null, failed: false });
+          setFacilitatorCertificateData({ loaded: false, payload: null, failed: false });
         }
       })
       .catch((e: unknown) => {
@@ -1343,6 +1659,7 @@ export default function AssessorProjectQuickViewPage() {
         setChecklistDocumentsData(null);
         setFacilitatorAdminAssessors({ loaded: false, payload: null, failed: false });
         setFacilitatorAssessmentScoring({ loaded: false, payload: null, failed: false });
+        setFacilitatorCertificateData({ loaded: false, payload: null, failed: false });
         setCoordinatorCatalog([]);
       })
       .finally(() => {
@@ -1475,6 +1792,16 @@ export default function AssessorProjectQuickViewPage() {
     facilitatorAssessmentScoring.loaded &&
     !facilitatorAssessmentScoring.failed &&
     hasFacilitatorPreliminaryScoringDone(facilitatorAssessmentScoring.payload);
+  const facilitatorFinalScoringSubmitted =
+    isFacilitatorProject &&
+    facilitatorAssessmentScoring.loaded &&
+    !facilitatorAssessmentScoring.failed &&
+    hasFacilitatorFinalScoringSubmitted(facilitatorAssessmentScoring.payload);
+  const facilitatorCertificateUploaded =
+    isFacilitatorProject &&
+    facilitatorCertificateData.loaded &&
+    !facilitatorCertificateData.failed &&
+    hasFacilitatorCertificateUploaded(facilitatorCertificateData.payload);
   const coordinatorAssigned = hasCoordinatorAssignedPayload(quickView, assignments);
   const flowSteps = resolveFlowSteps(
     quickView,
@@ -1492,6 +1819,8 @@ export default function AssessorProjectQuickViewPage() {
     isFacilitatorProject,
     facilitatorAssessorAssignmentDone,
     facilitatorPreliminaryScoringDone,
+    facilitatorFinalScoringSubmitted,
+    facilitatorCertificateUploaded,
   );
   const visibleMilestoneRows = milestoneRows
     .map((row, idx) => {
@@ -1528,9 +1857,9 @@ export default function AssessorProjectQuickViewPage() {
     { label: "Project code need to upload by CII", aliases: ["project code need to upload by cii", "project code need to upload"], responsibility: "CII" },
     { label: "Assign project coordinator", aliases: ["assign project coordinator", "project coordinator assigned"], responsibility: "CII" },
     { label: "Launch and training program need to done by consultant", aliases: ["launch and training", "launch training"], responsibility: "Consultant" },
-    { label: "Proforma invoice need to done by consultant", aliases: ["proforma invoice", "pi tax invoice"], responsibility: "Consultant" },
+    { label: "2nd invoice payment done by consultant", aliases: ["2nd invoice payment done by consultant", "proforma invoice", "pi tax invoice"], responsibility: "Consultant" },
     { label: "Supporting document needs to be uploaded", aliases: ["supporting document needs to be uploaded", "supporting document"], responsibility: "Consultant" },
-    { label: "CII need to approve/reject the proforma invoice", aliases: ["approve reject the proforma invoice", "cii need to approve reject"], responsibility: "CII" },
+    { label: "2nd invoice needs to be approved or rejected by Admin", aliases: ["2nd invoice needs to be approved or rejected by admin", "approve reject the proforma invoice", "cii need to approve reject"], responsibility: "Admin" },
     { label: "Company needs to upload primary data form", aliases: ["company needs to upload primary data form", "primary data form"], responsibility: "Company" },
     { label: "CII accept or reject primary data form", aliases: ["cii accept or reject primary data form", "primary data accepted", "primary data rejected"], responsibility: "CII" },
   ];

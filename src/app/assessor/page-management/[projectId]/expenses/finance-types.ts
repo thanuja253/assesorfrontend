@@ -15,6 +15,7 @@ export type ExpenseInvoiceView = {
   document_url?: string;
   file_url?: string;
   payment_for?: string;
+  payment_for_label?: string;
   type?: string;
   invoice_type?: string;
   status?: string | number;
@@ -66,7 +67,12 @@ export function invoiceDocUrl(invoice: ExpenseInvoiceView): string {
 }
 
 export function invoiceType(invoice: ExpenseInvoiceView): string {
-  return asText(invoice.invoice_type ?? invoice.type ?? invoice.payment_for).toLowerCase();
+  return asText(
+    invoice.invoice_type ??
+      invoice.type ??
+      invoice.payment_for_label ??
+      invoice.payment_for,
+  ).toLowerCase();
 }
 
 export function invoiceApprovalText(invoice: ExpenseInvoiceView): string {

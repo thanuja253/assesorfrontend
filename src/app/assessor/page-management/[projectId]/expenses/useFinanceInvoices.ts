@@ -55,8 +55,25 @@ function categorizeInvoiceTabs(invoice: ExpenseInvoiceView): FinanceTabKey[] {
   const type = invoiceType(invoice);
   if (type.includes("expense")) return ["expenses"];
   if (type.includes("proforma")) return ["proforma-tax"];
+  if (type.includes("tax")) return ["proforma-tax", "tax-invoice"];
   if (type.includes("invoice")) return ["proforma-tax", "tax-invoice"];
   return ["proforma-tax"];
+}
+
+function dedupeInvoicesById(list: ExpenseInvoiceView[]): ExpenseInvoiceView[] {
+  const out: ExpenseInvoiceView[] = [];
+  const seen = new Set<string>();
+  for (const invoice of list) {
+    const id = invoiceId(invoice);
+    if (!id) {
+      out.push(invoice);
+      continue;
+    }
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(invoice);
+  }
+  return out;
 }
 
 function canEditPaymentForInvoice(invoice: ExpenseInvoiceView): boolean {
@@ -126,7 +143,7 @@ export function useFinanceInvoices(projectId: string, useFacilitatorApi: boolean
             ? nested.invoices
             : [];
         const list = listRaw.filter((it): it is ExpenseInvoiceView => !!it && typeof it === "object");
-        setInvoices(list);
+        setInvoices(dedupeInvoicesById(list));
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -261,7 +278,7 @@ export function useFinanceInvoices(projectId: string, useFacilitatorApi: boolean
             ? nested.invoices
             : [];
         const list = listRaw.filter((it): it is ExpenseInvoiceView => !!it && typeof it === "object");
-        setInvoices(list);
+        setInvoices(dedupeInvoicesById(list));
         setSupportingFile(null);
         setLocalSupportingFileNameByInvoice((prev) => ({ ...prev, [id]: uploadedName }));
         setSupportingFileName(uploadedName);
