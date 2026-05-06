@@ -5,7 +5,7 @@ export default async function FacilitatorCompatibilityPage({
 }: Readonly<{ params: Promise<{ parts?: string[] }> }>) {
   const { parts = [] } = await params;
   if (parts[0] === "login") {
-    redirect("/login/facilitator");
+    redirect("/login");
   }
   const suffix = parts.length ? `/${parts.join("/")}` : "";
   const target = `/assessor${suffix}`;
