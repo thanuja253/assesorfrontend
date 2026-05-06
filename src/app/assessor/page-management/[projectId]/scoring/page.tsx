@@ -236,15 +236,17 @@ export default function AssessorProjectScoringPage() {
         const scoringPayload = await getAdminAssessmentScoring(projectId, selectedCriteriaId || undefined);
         if (cancelled) return;
         const scoringObj = (scoringPayload.scoring as Record<string, unknown> | undefined) ?? {};
-        const scoringRows = toRows(scoringObj.rows ?? scoringObj.data ?? scoringPayload.rows ?? []).map((row) => ({
-          ...row,
-          preliminary_score: resolvePreScore(row),
-          coordinator_remarks:
+        const scoringRows = toRows(scoringObj.rows ?? scoringObj.data ?? scoringPayload.rows ?? []).map((row): ScoringRow => {
+          const coordinatorRemarksRaw =
             row.coordinator_remarks ??
             (row as Record<string, unknown>).coordinatorremarks ??
-            (row as Record<string, unknown>).remarks ??
-            "",
-        }));
+            (row as Record<string, unknown>).remarks;
+          return {
+            ...row,
+            preliminary_score: resolvePreScore(row),
+            coordinator_remarks: toStringSafe(coordinatorRemarksRaw),
+          };
+        });
         setRows(scoringRows);
         const nextScores: Record<string, string> = {};
         const nextRemarks: Record<string, string> = {};

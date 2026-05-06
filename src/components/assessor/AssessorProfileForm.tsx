@@ -121,7 +121,7 @@ function effectiveDocRowStatus(
   docKey: DocStatusFileKey,
   docStatuses: Record<DocStatusFileKey, string>,
   serverDocNames: Record<DocStatusFileKey, string>,
-  profileApprovalStatus: "Pending" | "Approved" | "Rejected" | "" = "",
+  profileApprovalStatus: "Pending" | "Approved" | "Rejected" | "Draft" | "" = "",
 ): string {
   const rawStatus = (docStatuses[docKey] ?? "0").trim();
   const serverName = serverDocNames[docKey]?.trim() ?? "";
@@ -652,7 +652,7 @@ function validateAccountNumberInline(raw: string): string {
 
 export function AssessorProfileForm() {
   const pathname = usePathname();
-  const isFacilitatorFlow = pathname.includes("/facilitator");
+  const isFacilitatorFlow = (pathname ?? "").includes("/facilitator");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [saveError, setSaveError] = useState("");
@@ -2182,7 +2182,7 @@ export function AssessorProfileForm() {
                               <>
                                 <a
                                   className="inline-flex h-6 w-6 items-center justify-center rounded border border-[#cdd8e8] bg-white text-[#2f6ea5] hover:bg-[#f1f6ff]"
-                                  href={URL.createObjectURL(selected)}
+                                  href={selected ? URL.createObjectURL(selected) : undefined}
                                   target="_blank"
                                   rel="noreferrer"
                                   aria-label={`View ${row.label}`}
@@ -2195,8 +2195,8 @@ export function AssessorProfileForm() {
                                 </a>
                                 <a
                                   className="inline-flex h-6 w-6 items-center justify-center rounded border border-[#cdd8e8] bg-white text-[#2f6ea5] hover:bg-[#f1f6ff]"
-                                  href={URL.createObjectURL(selected)}
-                                  download={selected.name}
+                                  href={selected ? URL.createObjectURL(selected) : undefined}
+                                  download={selected?.name ?? ""}
                                   aria-label={`Download ${row.label}`}
                                   title="Download"
                                 >
