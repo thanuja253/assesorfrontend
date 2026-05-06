@@ -232,13 +232,21 @@ export function useFinanceInvoices(projectId: string, useFacilitatorApi: boolean
         if (cancelled || !approval || typeof approval !== "object") return;
         const merged = approval as Record<string, unknown>;
         setInvoices((prev) =>
-          prev.map((invoice) => {
+          prev.map((invoice): ExpenseInvoiceView => {
             if (invoiceId(invoice) !== selectedInvoiceId) return invoice;
+
+            const mergedApprovalStatus = merged.approval_status as string | number | undefined;
+            const mergedApprovalLabel = merged.approval_status_label as string | number | undefined;
+            const mergedRemarks = merged.remarks as string | undefined;
+
             return {
               ...invoice,
-              approval_status: merged.approval_status ?? invoice.approval_status,
-              approval_status_label: (merged.approval_status_label as string | undefined) ?? invoice.approval_status_label,
-              remarks: (merged.remarks as string | undefined) ?? invoice.remarks,
+              approval_status: mergedApprovalStatus ?? invoice.approval_status,
+              approval_status_label:
+                (typeof mergedApprovalLabel === "string" || typeof mergedApprovalLabel === "number"
+                  ? String(mergedApprovalLabel)
+                  : invoice.approval_status_label),
+              remarks: mergedRemarks ?? invoice.remarks,
             };
           }),
         );
