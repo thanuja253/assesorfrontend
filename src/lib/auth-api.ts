@@ -31,7 +31,7 @@ function resolveApiBaseUrl(): string {
     return fromEnv;
   }
   if (process.env.NODE_ENV === "development") {
-    return "http://localhost:3001";
+    return "https://green-co-api-04z5.onrender.com";
   }
   return "";
 }
