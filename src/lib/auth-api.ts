@@ -934,3 +934,149 @@ export async function forgotAssessorPassword(payload: {
 }): Promise<{ message: string }> {
   return forgotFacilitatorPassword(payload);
 }
+
+export type NotificationRole = "admin" | "facilitator" | "assessor";
+
+export type NotificationsListParams = {
+  skip?: number;
+  limit?: number;
+};
+
+function getRoleNotificationBasePath(role: NotificationRole): string {
+  if (role === "admin") return "/api/admin/notifications";
+  if (role === "facilitator") return "/api/facilitator/notifications";
+  return "/api/assessor/notifications";
+}
+
+async function notificationAuthHeaders(): Promise<HeadersInit> {
+  const token = getStoredToken();
+  if (!token) {
+    throw new AuthApiError(401, "You are not signed in. Please log in again.");
+  }
+  return {
+    Accept: "application/json",
+    Authorization: `Bearer ${token}`,
+  };
+}
+
+export async function listNotifications(
+  role: NotificationRole,
+  params: NotificationsListParams = {},
+): Promise<Record<string, unknown>> {
+  const headers = await notificationAuthHeaders();
+  const query = new URLSearchParams();
+  query.set("skip", String(params.skip ?? 0));
+  query.set("limit", String(params.limit ?? 50));
+  const path = `${getRoleNotificationBasePath(role)}?${query.toString()}`;
+
+  let response: Response;
+  try {
+    response = await apiFetch(getApiUrl(path), { method: "GET", headers, cache: "no-store" });
+  } catch {
+    throw new AuthApiError(0, "Network error. Please try again.");
+  }
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new AuthApiError(response.status, parseApiErrorMessage(data) ?? "Could not load notifications.");
+  }
+
+  if (data && typeof data === "object") {
+    return data as Record<string, unknown>;
+  }
+  return {};
+}
+
+export async function markAllNotificationsSeen(role: NotificationRole): Promise<{ message?: string }> {
+  const headers = await notificationAuthHeaders();
+  let response: Response;
+  try {
+    response = await apiFetch(getApiUrl(`${getRoleNotificationBasePath(role)}/seen`), {
+      method: "PATCH",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+  } catch {
+    throw new AuthApiError(0, "Network error. Please try again.");
+  }
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new AuthApiError(response.status, parseApiErrorMessage(data) ?? "Could not mark notifications as seen.");
+  }
+  return {
+    message:
+      (typeof data?.message === "string" && data.message.trim()) ||
+      (typeof data?.data?.message === "string" && data.data.message.trim()) ||
+      undefined,
+  };
+}
+
+export async function markNotificationSeen(
+  role: NotificationRole,
+  notificationId: string,
+): Promise<{ message?: string }> {
+  const id = notificationId.trim();
+  if (!id) {
+    throw new AuthApiError(400, "Notification id is required.");
+  }
+
+  const headers = await notificationAuthHeaders();
+  let response: Response;
+  try {
+    response = await apiFetch(getApiUrl(`${getRoleNotificationBasePath(role)}/${encodeURIComponent(id)}/seen`), {
+      method: "PATCH",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+  } catch {
+    throw new AuthApiError(0, "Network error. Please try again.");
+  }
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new AuthApiError(response.status, parseApiErrorMessage(data) ?? "Could not mark notification as seen.");
+  }
+  return {
+    message:
+      (typeof data?.message === "string" && data.message.trim()) ||
+      (typeof data?.data?.message === "string" && data.data.message.trim()) ||
+      undefined,
+  };
+}
+
+export function listFacilitatorNotifications(params: NotificationsListParams = {}): Promise<Record<string, unknown>> {
+  return listNotifications("facilitator", params);
+}
+
+export function markAllFacilitatorNotificationsSeen(): Promise<{ message?: string }> {
+  return markAllNotificationsSeen("facilitator");
+}
+
+export function markFacilitatorNotificationSeen(notificationId: string): Promise<{ message?: string }> {
+  return markNotificationSeen("facilitator", notificationId);
+}
+
+export function listAssessorNotifications(params: NotificationsListParams = {}): Promise<Record<string, unknown>> {
+  return listNotifications("assessor", params);
+}
+
+export function markAllAssessorNotificationsSeen(): Promise<{ message?: string }> {
+  return markAllNotificationsSeen("assessor");
+}
+
+export function markAssessorNotificationSeen(notificationId: string): Promise<{ message?: string }> {
+  return markNotificationSeen("assessor", notificationId);
+}
+
+export function listAdminNotifications(params: NotificationsListParams = {}): Promise<Record<string, unknown>> {
+  return listNotifications("admin", params);
+}
+
+export function markAllAdminNotificationsSeen(): Promise<{ message?: string }> {
+  return markAllNotificationsSeen("admin");
+}
+
+export function markAdminNotificationSeen(notificationId: string): Promise<{ message?: string }> {
+  return markNotificationSeen("admin", notificationId);
+}
