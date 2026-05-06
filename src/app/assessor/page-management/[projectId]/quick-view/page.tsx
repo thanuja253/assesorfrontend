@@ -1006,6 +1006,61 @@ function hasPlaqueAndPrRaised(quickView: Record<string, unknown>): boolean {
   return hasValue(prNo) && hasValue(pNo) && hasValue(prAmount) && hasValue(pAmount) && hasValue(prDate) && hasValue(pDate);
 }
 
+function resolveFacilitatorStageActivityId(quickView: Record<string, unknown>): number | null {
+  const profile = (quickView.profile as Record<string, unknown> | undefined) ?? {};
+  const milestoneFlow = (quickView.milestone_flow as Record<string, unknown> | undefined) ?? {};
+  const candidates: unknown[] = [
+    profile.current_activity_id,
+    profile.currentActivityId,
+    profile.next_activities_id,
+    profile.nextActivitiesId,
+    quickView.current_activity_id,
+    quickView.currentActivityId,
+    milestoneFlow.current_flow,
+  ];
+  for (const candidate of candidates) {
+    const parsed = Number(candidate);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+
+function isPureFacilitatorProject(quickView: Record<string, unknown>): boolean {
+  const profile = (quickView.profile as Record<string, unknown> | undefined) ?? {};
+  const project = (quickView.project as Record<string, unknown> | undefined) ?? {};
+  const company = (quickView.company as Record<string, unknown> | undefined) ?? {};
+  const assessmentRaw =
+    profile.assessment ??
+    profile.assessment_type ??
+    profile.assessmentType ??
+    project.assessment ??
+    project.assessment_type ??
+    company.assessment ??
+    company.assessment_type ??
+    quickView.assessment ??
+    quickView.assessment_type;
+  const processTypeRaw =
+    profile.process_type ??
+    profile.processType ??
+    project.process_type ??
+    project.processType ??
+    company.process_type ??
+    company.processType ??
+    quickView.process_type ??
+    quickView.processType;
+  const assessmentText =
+    typeof assessmentRaw === "string" || typeof assessmentRaw === "number"
+      ? String(assessmentRaw).trim().toLowerCase()
+      : "";
+  const processTypeText =
+    typeof processTypeRaw === "string" || typeof processTypeRaw === "number"
+      ? String(processTypeRaw).trim().toLowerCase()
+      : "";
+  // Hybrid CI+Facilitator projects are marked as process_type "f".
+  if (processTypeText === "f") return false;
+  return assessmentText.includes("facilitator");
+}
+
 function hasFeedbackReportUploaded(quickView: Record<string, unknown>): boolean {
   const profile = (quickView.profile as Record<string, unknown> | undefined) ?? {};
   const hasStr = (v: unknown): boolean => typeof v === "string" && v.trim().length > 0;
@@ -1082,8 +1137,16 @@ function resolveFlowSteps(
     typeof woPoNumberRaw === "string"
       ? woPoNumberRaw.trim().length > 0
       : typeof woPoNumberRaw === "number" && String(woPoNumberRaw).trim().length > 0;
-  const hasPlaquePrData = isFacilitatorProject && hasPlaqueAndPrRaised(quickView);
-  const hasFeedbackReport = isFacilitatorProject && hasFeedbackReportUploaded(quickView);
+  const facilitatorStageActivityId = resolveFacilitatorStageActivityId(quickView);
+  const pureFacilitatorProject = isPureFacilitatorProject(quickView);
+  const facilitatorStageActive =
+    isFacilitatorProject &&
+    (
+      pureFacilitatorProject ||
+      (facilitatorStageActivityId !== null && facilitatorStageActivityId >= 61)
+    );
+  const hasPlaquePrData = facilitatorStageActive && hasPlaqueAndPrRaised(quickView);
+  const hasFeedbackReport = facilitatorStageActive && hasFeedbackReportUploaded(quickView);
 
   if (hasFeedbackReport) {
     return {
@@ -1443,7 +1506,7 @@ function resolveFlowSteps(
         next: { activity: "Contract Approved", status: "Completed", responsibility: "Admin" },
       };
     }
-    if (isFacilitatorProject) {
+    if (facilitatorStageActive) {
       const reviewStatusLabel = awaitingCiiReview ? "Awaiting CII review" : "Pending review";
       return {
         latest: {
@@ -1467,6 +1530,16 @@ function resolveFlowSteps(
 
   if (hasFacilitatorRegistrationData) {
     if (isFacilitatorProject) {
+      if (!facilitatorStageActive) {
+        return {
+          latest: { activity: "Company Filled Registration Info", status: "Completed", responsibility: "Company" },
+          next: {
+            activity: "Company Will Upload Work order",
+            status: "Pending",
+            responsibility: "Company",
+          },
+        };
+      }
       return {
         latest: { activity: "Company Filled Registration Info", status: "Completed", responsibility: "Company" },
         next: {
@@ -2070,7 +2143,7 @@ export default function AssessorProjectQuickViewPage() {
   const facilitatorFlowSteps: Array<{ label: string; aliases: string[]; responsibility: string }> = [
     { label: "Company Registered by Company", aliases: ["company registered by company", "company registered"], responsibility: "Company" },
     { label: "Company Filled Registration Info", aliases: ["company filled registration info", "registration filled"], responsibility: "Company" },
-    { label: "Contract document need to upload by consultant/facilitator", aliases: ["contract document need to upload", "contract document upload", "upload contract document"], responsibility: "Facilitator" },
+    { label: "Company Will Upload Work order", aliases: ["company will upload work order", "contract document need to upload", "contract document upload", "upload contract document"], responsibility: "Company" },
     { label: "Contract document review", aliases: ["contract document review", "contract review", "contract rejected", "re upload contract", "re-upload contract"], responsibility: "CII" },
     { label: "Contract has been approved", aliases: ["contract has been approved", "contract approved"], responsibility: "Admin" },
     { label: "CII to upload PO amount", aliases: ["cii to upload po amount", "upload po amount"], responsibility: "CII" },
