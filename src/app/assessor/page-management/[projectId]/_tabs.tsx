@@ -84,7 +84,7 @@ function TabIcon({ tabKey, active }: Readonly<{ tabKey: string; active: boolean 
 }
 
 export default function ProjectTabs({ tabs }: Readonly<{ tabs: TabItem[] }>) {
-  const pathname = usePathname() ?? "";
+  const pathname = usePathname();
 
   return (
     <nav className="flex flex-wrap items-end gap-x-1 gap-y-1 border-b border-slate-200">
