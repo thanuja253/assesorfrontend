@@ -31,7 +31,7 @@ function resolveApiBaseUrl(): string {
     return fromEnv;
   }
   if (process.env.NODE_ENV === "development") {
-    return "https://green-co-api-04z5.onrender.com";
+    return "http://localhost:3001";
   }
   return "";
 }
@@ -897,20 +897,33 @@ export async function forgotFacilitatorPassword(payload: {
     throw new AuthApiError(400, "Please enter your email address.");
   }
 
-  let response: Response;
+  let response: Response | null = null;
+  let data: unknown = null;
+  const paths = [
+    "/api/facilitator/auth/forgot-password",
+    "/api/assessor/auth/forgot-password",
+  ];
   try {
-    response = await apiFetch(getApiUrl("/api/facilitator/auth/forgot-password"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ email }),
-    });
+    for (const path of paths) {
+      response = await apiFetch(getApiUrl(path), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email }),
+      });
+      data = await response.json().catch(() => null);
+      if (response.ok || response.status !== 404) {
+        break;
+      }
+    }
   } catch {
     throw new AuthApiError(0, "Network error. Please try again.");
   }
 
-  const data = await response.json().catch(() => null);
+  if (!response) {
+    throw new AuthApiError(500, "Could not send reset link.");
+  }
 
   if (!response.ok) {
     const message =
@@ -921,9 +934,14 @@ export async function forgotFacilitatorPassword(payload: {
     throw new AuthApiError(response.status, message);
   }
 
+  const responseRecord = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+  const nestedData =
+    responseRecord.data && typeof responseRecord.data === "object"
+      ? (responseRecord.data as Record<string, unknown>)
+      : {};
   const message =
-    (typeof data?.message === "string" && data.message.trim()) ||
-    (typeof data?.data?.message === "string" && data.data.message.trim()) ||
+    (typeof responseRecord.message === "string" && responseRecord.message.trim()) ||
+    (typeof nestedData.message === "string" && nestedData.message.trim()) ||
     "Password sent to your email!";
 
   return { message };

@@ -1648,6 +1648,13 @@ export default function AssessorProjectQuickViewPage() {
     }
     setLoading(true);
     setError("");
+    getCompanyProjectFacilitatorRegistrationInfo(projectId)
+      .then((regPayload) => {
+        if (!cancelled) setFacilitatorRegistration(regPayload);
+      })
+      .catch(() => {
+        if (!cancelled) setFacilitatorRegistration(null);
+      });
     void Promise.all([
       getCompanyProjectQuickView(projectId),
       getCompanyProjectAssignments(projectId),
@@ -1767,13 +1774,6 @@ export default function AssessorProjectQuickViewPage() {
             })
             .catch(() => {
               if (!cancelled) setFacilitatorCertificateData({ loaded: true, payload: null, failed: true });
-            });
-          getCompanyProjectFacilitatorRegistrationInfo(projectId)
-            .then((regPayload) => {
-              if (!cancelled) setFacilitatorRegistration(regPayload);
-            })
-            .catch(() => {
-              if (!cancelled) setFacilitatorRegistration(null);
             });
           getCompanyProjectWorkOrderDocument(projectId)
             .then((payload) => {
@@ -1917,7 +1917,6 @@ export default function AssessorProjectQuickViewPage() {
               if (!cancelled) setChecklistDocumentsData(null);
             });
         } else {
-          setFacilitatorRegistration(null);
           setContractDocument({});
           setProjectCodeAssignment(null);
           setLaunchTrainingData(null);
