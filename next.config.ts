@@ -3,6 +3,15 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   basePath: "/consultant",
   assetPrefix: "/consultant/",
+  images: {
+    remotePatterns: [
+      {
+        protocol: "https",
+        hostname: "staging.greenco.in",
+        pathname: "/app-assets/images/logo/**",
+      },
+    ],
+  },
   async redirects() {
     return [
       {

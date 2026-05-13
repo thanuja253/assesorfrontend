@@ -8,7 +8,9 @@ import {
   getFacilitatorFinanceInvoiceApprovalStatus,
   getFacilitatorProjectLaunchTraining,
   getCompanyProjectPrimaryData,
+  getAdminProjectPrimaryData,
   getCompanyProjectPrimaryDataReview,
+  getAdminProjectPrimaryDataReview,
   getCompanyProjectChecklistDocuments,
   getCompanyProjectFacilitatorRegistrationInfo,
   getCompanyProjectProjectCode,
@@ -518,6 +520,13 @@ function toEpochMs(value: unknown): number {
   return Number.isFinite(t) ? t : 0;
 }
 
+/** Human-readable invoice phrase (e.g. "Proforma invoice") for latest/next step copy — avoids mislabelling the first cycle as "2nd". */
+function capitalizeFinanceFlowLabel(label: string): string {
+  const t = label.trim();
+  if (!t) return "Invoice";
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
 function getLatestFinanceInvoice(data: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!data || typeof data !== "object") return null;
   const invoicesRaw = data.invoices;
@@ -635,12 +644,423 @@ function hasPrimaryDataFilledPayload(data: Record<string, unknown> | null): bool
 
 const EXCLUDED_PRIMARY_FLOW_SECTIONS = new Set(["gi", "ww"]);
 
+/** CII-gated primary sections (GI/WW excluded). Aligns with CompanyProjectFlow PRIMARY_DATA_REVIEW_INFO_TYPES / getCiiGatedPrimaryDataReviewTypes. */
+const CII_GATED_PRIMARY_DATA_SECTION_CODES: readonly string[] = [
+  "ee",
+  "wc",
+  "re",
+  "gge",
+  "wm",
+  "mcr",
+  "gsc",
+  "ps",
+  "gin",
+  "tar",
+];
+
+function lookupPrimarySectionReview(
+  map: Record<string, unknown>,
+  code: string,
+): Record<string, unknown> | null {
+  const lower = code.trim().toLowerCase();
+  const raw =
+    map[lower] ??
+    map[code] ??
+    map[code.toUpperCase()] ??
+    map[lower.toUpperCase()];
+  return reviewRecordFromValue(raw);
+}
+
+/** Map API review fields to a coarse status for “all submitted / all accepted” gates (CompanyProjectFlow normalizeSectionReviewStatus). */
+function normalizePrimaryDataReviewStatusCanonical(value: unknown): string {
+  const s = normalizePrimarySectionStatus(value);
+  if (!s) return "";
+  if (s === "accepted" || s === "1" || s === "approved" || (s.includes("accept") && !s.includes("not"))) return "accepted";
+  if (s === "rejected" || s === "2" || s.includes("reject")) return "rejected";
+  if (s === "under_review" || s === "pending" || s === "0" || s.includes("pending") || s.includes("review")) {
+    return "under_review";
+  }
+  if (s === "submitted" || s.includes("submit")) return "submitted";
+  return s;
+}
+
+function hasResubmittedAfterRejectionFlag(review: Record<string, unknown>): boolean {
+  const resub = review.resubmitted_after_rejection ?? review.resubmittedAfterRejection;
+  return resub === true || resub === "true" || resub === 1 || resub === "1";
+}
+
+type PrimaryDataQuickviewReviewStatus = {
+  allSectionsSubmitted: boolean;
+  allSectionsAccepted: boolean;
+};
+
+function derivePrimaryDataWorkflowFlagsFromQuickviewSteps(
+  quickView: Record<string, unknown>,
+): PrimaryDataQuickviewReviewStatus {
+  const milestoneFlow =
+    (quickView.milestone_flow as Record<string, unknown> | undefined) ??
+    (quickView.milestoneFlow as Record<string, unknown> | undefined) ??
+    {};
+  const latestRaw = milestoneFlow.latest_step ?? milestoneFlow.latestStep ?? quickView.latest_step ?? quickView.latestStep;
+  const nextRaw = milestoneFlow.next_step ?? milestoneFlow.nextStep ?? quickView.next_step ?? quickView.nextStep;
+  const latest = toStepDetail(latestRaw);
+  const next = toStepDetail(nextRaw);
+  const latestActivity = normalizeQuickviewStepBlob(latest.activity);
+  const nextActivity = normalizeQuickviewStepBlob(next.activity);
+  const latestStatus = normalizeQuickviewStepBlob(latest.status);
+
+  const uploadedByCompany =
+    (
+      latestActivity.includes("uploaded all primary data") ||
+      latestActivity.includes("primary data has been uploaded") ||
+      latestActivity.includes("uploaded primary data")
+    ) &&
+    (latestStatus.includes("complete") || latestStatus.includes("done") || latestStatus.includes("submit"));
+
+  const awaitingAdminAcceptance =
+    nextActivity.includes("admin need to accept primary data") ||
+    nextActivity.includes("cii need to accept primary data") ||
+    nextActivity.includes("accept primary data");
+
+  const acceptedByAdmin =
+    latestActivity.includes("admin accepted primary data") ||
+    latestActivity.includes("cii accepted primary data") ||
+    (
+      latestActivity.includes("primary data") &&
+      (latestActivity.includes("accepted") || latestActivity.includes("approved")) &&
+      (latestStatus.includes("complete") || latestStatus.includes("accept") || latestStatus.includes("approv"))
+    ) ||
+    nextActivity.includes("all assessment submittals to be uploaded");
+
+  return {
+    allSectionsSubmitted: uploadedByCompany || awaitingAdminAcceptance || acceptedByAdmin,
+    allSectionsAccepted: acceptedByAdmin,
+  };
+}
+
+/** Loose boolean parse — mirrors CompanyProjectFlow parseBoolLoose for workflow flags. */
+function parsePrimaryDataBoolLoose(value: unknown): boolean {
+  if (value === true || value === 1 || value === "1") return true;
+  if (value === false || value === 0 || value === "0") return false;
+  if (typeof value === "string") {
+    const t = value.trim().toLowerCase();
+    return (
+      t === "true" ||
+      t === "yes" ||
+      t === "y" ||
+      t === "approved" ||
+      t === "accepted" ||
+      t === "complete" ||
+      t === "completed"
+    );
+  }
+  return false;
+}
+
+/**
+ * Aggregate flags from primary-data snapshot/review payload (`data.*`), same keys as CompanyProjectFlow
+ * derivePrimaryDataWorkflowSummary (primary_data_approved, all_primary_data_accepted, …).
+ */
+function derivePrimaryDataWorkflowFlagsFromPayload(source: Record<string, unknown> | null): PrimaryDataQuickviewReviewStatus {
+  const empty: PrimaryDataQuickviewReviewStatus = { allSectionsSubmitted: false, allSectionsAccepted: false };
+  if (!source || typeof source !== "object") return empty;
+  const root = unwrapPrimaryDataRoot(source);
+
+  const allSubmitted =
+    parsePrimaryDataBoolLoose(root.primary_data_submitted) ||
+    parsePrimaryDataBoolLoose(root.primaryDataSubmitted) ||
+    parsePrimaryDataBoolLoose(root.primary_data_form_uploaded) ||
+    parsePrimaryDataBoolLoose(root.primaryDataFormUploaded) ||
+    parsePrimaryDataBoolLoose(root.all_primary_data_submitted) ||
+    parsePrimaryDataBoolLoose(root.allPrimaryDataSubmitted);
+
+  const allAccepted =
+    parsePrimaryDataBoolLoose(root.primary_data_approved) ||
+    parsePrimaryDataBoolLoose(root.primaryDataApproved) ||
+    parsePrimaryDataBoolLoose(root.cii_primary_data_approved) ||
+    parsePrimaryDataBoolLoose(root.ciiPrimaryDataApproved) ||
+    parsePrimaryDataBoolLoose(root.all_primary_data_accepted) ||
+    parsePrimaryDataBoolLoose(root.allPrimaryDataAccepted);
+
+  return {
+    allSectionsSubmitted: allSubmitted,
+    allSectionsAccepted: allAccepted,
+  };
+}
+
+function computeSectionBasedCiiGatedReviewStatus(
+  primaryDataForm: Record<string, unknown> | null,
+): PrimaryDataQuickviewReviewStatus {
+  const empty: PrimaryDataQuickviewReviewStatus = { allSectionsSubmitted: false, allSectionsAccepted: false };
+  if (!primaryDataForm || typeof primaryDataForm !== "object") return empty;
+  const map = getPrimarySectionReviewsMap(primaryDataForm);
+  const gated = CII_GATED_PRIMARY_DATA_SECTION_CODES;
+
+  let allSectionsSubmitted = true;
+  let allSectionsAccepted = true;
+
+  for (const code of gated) {
+    const rec = lookupPrimarySectionReview(map, code);
+    if (!rec) {
+      allSectionsSubmitted = false;
+      allSectionsAccepted = false;
+      continue;
+    }
+    const rawStatus =
+      rec.status ??
+      rec.review_status ??
+      rec.section_status ??
+      rec.reviewStatus ??
+      rec.approval_status ??
+      rec.approvalStatus;
+    const canonical = normalizePrimaryDataReviewStatusCanonical(rawStatus);
+    if (canonical === "") {
+      allSectionsSubmitted = false;
+      allSectionsAccepted = false;
+      continue;
+    }
+    if (canonical !== "accepted") {
+      allSectionsAccepted = false;
+    }
+    if (hasResubmittedAfterRejectionFlag(rec)) {
+      allSectionsAccepted = false;
+    }
+  }
+
+  return { allSectionsSubmitted, allSectionsAccepted };
+}
+
+/**
+ * Merges: (1) API workflow flags on primary-data GET(s), (2) same flags on quickview/profile when backend mirrors them,
+ * (3) per-section section_reviews for CII-gated codes. Any source marking “all accepted” wins for approval display.
+ */
+function computePrimaryDataOverallReviewStatus(
+  primaryDataForm: Record<string, unknown> | null,
+  quickView: Record<string, unknown>,
+): PrimaryDataQuickviewReviewStatus {
+  const workflowFromPrimary = derivePrimaryDataWorkflowFlagsFromPayload(primaryDataForm);
+  const profile = (quickView.profile as Record<string, unknown> | undefined) ?? {};
+  const project = (quickView.project as Record<string, unknown> | undefined) ?? {};
+  const company = (quickView.company as Record<string, unknown> | undefined) ?? {};
+  const workflowFromQuickView = derivePrimaryDataWorkflowFlagsFromPayload({
+    ...quickView,
+    ...profile,
+    ...project,
+    ...company,
+  } as Record<string, unknown>);
+  const workflowFromQuickviewSteps = derivePrimaryDataWorkflowFlagsFromQuickviewSteps(quickView);
+  const sectionBased = computeSectionBasedCiiGatedReviewStatus(primaryDataForm);
+
+  return {
+    allSectionsSubmitted:
+      workflowFromPrimary.allSectionsSubmitted ||
+      workflowFromQuickView.allSectionsSubmitted ||
+      workflowFromQuickviewSteps.allSectionsSubmitted ||
+      sectionBased.allSectionsSubmitted,
+    allSectionsAccepted:
+      workflowFromPrimary.allSectionsAccepted ||
+      workflowFromQuickView.allSectionsAccepted ||
+      workflowFromQuickviewSteps.allSectionsAccepted ||
+      sectionBased.allSectionsAccepted,
+  };
+}
+
+function hasRejectedCiiGatedPrimarySection(primaryDataForm: Record<string, unknown> | null): boolean {
+  if (!primaryDataForm || typeof primaryDataForm !== "object") return false;
+  const map = getPrimarySectionReviewsMap(primaryDataForm);
+  for (const code of CII_GATED_PRIMARY_DATA_SECTION_CODES) {
+    const rec = lookupPrimarySectionReview(map, code);
+    if (!rec) continue;
+    if (isPrimarySectionRejected(rec)) return true;
+    if (normalizePrimaryDataReviewStatusCanonical(
+      rec.status ??
+        rec.review_status ??
+        rec.section_status ??
+        rec.reviewStatus ??
+        rec.approval_status ??
+        rec.approvalStatus,
+    ) === "rejected") {
+      return true;
+    }
+  }
+  return false;
+}
+
+function normalizeQuickviewStepBlob(text: string): string {
+  return text.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function combinedFlowActivitiesInPrimaryDataLane(latestActivity: string, nextActivity: string): boolean {
+  const combined = normalizeQuickviewStepBlob(`${latestActivity} ${nextActivity}`);
+  return (
+    combined.includes("primary data") ||
+    combined.includes("primary-data") ||
+    combined.includes("upload primary") ||
+    combined.includes("accept primary") ||
+    combined.includes("reject primary")
+  );
+}
+
+/** Do not override once flow copy has moved past the primary-data lane (CompanyProjectFlow guard). */
+function combinedFlowActivitiesPastPrimaryData(latestActivity: string, nextActivity: string): boolean {
+  const combined = normalizeQuickviewStepBlob(`${latestActivity} ${nextActivity}`);
+  return (
+    combined.includes("assessor") ||
+    combined.includes("certificate") ||
+    combined.includes("recertification") ||
+    combined.includes("sustenance")
+  );
+}
+
+/** Facilitator quick view: later workflow rows (checklist, scoring, finance, feedback) should not be replaced by primary-data completion copy. */
+function facilitatorQuickviewPastPrimaryDataLane(latestActivity: string, nextActivity: string): boolean {
+  const c = normalizeQuickviewStepBlob(`${latestActivity} ${nextActivity}`);
+  if (c.includes("all assessment submittals to be uploaded")) return false;
+  return (
+    c.includes("checklist") ||
+    c.includes("assessment submittals completed") ||
+    c.includes("assigning assessor") ||
+    c.includes("assessor assignment") ||
+    c.includes("preliminary scoring") ||
+    c.includes("final scoring") ||
+    c.includes("upload certificate") ||
+    c.includes("certificate has been issued") ||
+    c.includes("2nd proforma") ||
+    c.includes("plaque") ||
+    c.includes("feedback") ||
+    c.includes("proforma invoice uploaded") ||
+    c.includes("supporting document") ||
+    c.includes("invoice payment") ||
+    c.includes("payment done by consultant") ||
+    c.includes("payment has been rejected") ||
+    c.includes("payment re-upload") ||
+    c.includes("re-uploaded supporting") ||
+    c.includes("launch and training") ||
+    c.includes("project coordinator assigned") ||
+    c.includes("project code submitted") ||
+    c.includes("po number has been uploaded") ||
+    c.includes("cii will upload proforma") ||
+    c.includes("consultant to upload supporting") ||
+    c.includes("tax invoice") ||
+    c.includes("proforma payment")
+  );
+}
+
+/**
+ * Mirrors CompanyProjectFlow `applyPrimaryDataQuickviewCompletionOverride`: hard-coded latest/next when
+ * primary-data lane + all CII-gated sections accepted (or submitted-but-pending-admin).
+ */
+function applyPrimaryDataQuickviewCompletionOverride(
+  flowSteps: {
+    latest: { activity: string; status: string; responsibility: string };
+    next: { activity: string; status: string; responsibility: string };
+  },
+  status: PrimaryDataQuickviewReviewStatus,
+  isFacilitatorProject: boolean,
+): {
+  latest: { activity: string; status: string; responsibility: string };
+  next: { activity: string; status: string; responsibility: string };
+} {
+  const la = flowSteps.latest.activity;
+  const na = flowSteps.next.activity;
+  const textInPrimaryLane = combinedFlowActivitiesInPrimaryDataLane(la, na);
+  const inPrimaryLane = isFacilitatorProject
+    ? textInPrimaryLane ||
+      (
+        (status.allSectionsSubmitted || status.allSectionsAccepted) &&
+        !facilitatorQuickviewPastPrimaryDataLane(la, na)
+      )
+    : textInPrimaryLane || status.allSectionsSubmitted || status.allSectionsAccepted;
+  if (!inPrimaryLane) return flowSteps;
+  if (combinedFlowActivitiesPastPrimaryData(la, na) && !status.allSectionsAccepted) return flowSteps;
+
+  /** Aggregate approval flags / all sections accepted — same priority as CompanyProjectFlow “done” line. */
+  if (status.allSectionsAccepted) {
+    return {
+      latest: {
+        activity: "Admin Accepted Primary Data Form",
+        status: "Completed",
+        responsibility: "CII",
+      },
+      next: {
+        activity: "All Assessment Submittals to be uploaded",
+        status: "Pending",
+        responsibility: "Company",
+      },
+    };
+  }
+  if (status.allSectionsSubmitted && !status.allSectionsAccepted) {
+    return {
+      latest: {
+        activity: "Company Uploaded All Primary Data",
+        status: "Completed",
+        responsibility: "Company",
+      },
+      next: {
+        activity: "Admin Need to Accept Primary Data",
+        status: "Pending",
+        responsibility: "Admin",
+      },
+    };
+  }
+  return flowSteps;
+}
+
 function unwrapPrimaryDataRoot(data: Record<string, unknown>): Record<string, unknown> {
   const nested = data.data;
   if (nested && typeof nested === "object" && !Array.isArray(nested)) {
     return { ...data, ...(nested as Record<string, unknown>) };
   }
   return data;
+}
+
+/**
+ * Merges GET .../primary-data and GET .../primary-data/review so workflow flags and section_reviews
+ * are not dropped when both endpoints return data (mirrors CompanyProjectFlow merged review payload).
+ */
+function mergePrimaryDataEndpointPayloads(
+  primary: Record<string, unknown> | null,
+  review: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!primary && !review) return null;
+  if (!primary) return review;
+  if (!review) return primary;
+
+  const a = unwrapPrimaryDataRoot(primary as Record<string, unknown>);
+  const b = unwrapPrimaryDataRoot(review as Record<string, unknown>);
+  const merged: Record<string, unknown> = { ...a, ...b };
+
+  const mergeSectionReviewArrays = (key: string) => {
+    const va = a[key];
+    const vb = b[key];
+    if (!Array.isArray(va) || !Array.isArray(vb)) return;
+    const bySection = new Map<string, Record<string, unknown>>();
+    const sectionKeyOf = (item: Record<string, unknown>): string => {
+      const raw = item.section_key ?? item.info_type ?? item.infoType ?? item.key;
+      return typeof raw === "string" ? raw.trim().toLowerCase() : "";
+    };
+    for (const item of va) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const rec = item as Record<string, unknown>;
+      const k = sectionKeyOf(rec);
+      if (k) bySection.set(k, { ...rec });
+    }
+    for (const item of vb) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const rec = item as Record<string, unknown>;
+      const k = sectionKeyOf(rec);
+      if (!k) continue;
+      const prev = bySection.get(k);
+      bySection.set(k, prev ? { ...prev, ...rec } : { ...rec });
+    }
+    merged[key] = [...bySection.values()];
+  };
+
+  mergeSectionReviewArrays("section_reviews");
+  mergeSectionReviewArrays("sectionReviews");
+  mergeSectionReviewArrays("primary_data_section_reviews");
+
+  return merged;
 }
 
 function reviewRecordFromValue(value: unknown): Record<string, unknown> | null {
@@ -695,10 +1115,14 @@ function isPrimarySectionRejected(review: Record<string, unknown>): boolean {
 }
 
 function isPrimarySectionAccepted(review: Record<string, unknown>): boolean {
-  const statusText = normalizePrimarySectionStatus(
-    review.status ?? review.review_status ?? review.section_status ?? review.reviewStatus,
-  );
-  return statusText === "accepted";
+  const raw =
+    review.status ??
+    review.review_status ??
+    review.section_status ??
+    review.reviewStatus ??
+    review.approval_status ??
+    review.approvalStatus;
+  return normalizePrimaryDataReviewStatusCanonical(raw) === "accepted";
 }
 
 function getRelevantPrimarySectionReviews(data: Record<string, unknown>): Record<string, unknown>[] {
@@ -710,6 +1134,12 @@ function getRelevantPrimarySectionReviews(data: Record<string, unknown>): Record
     if (rec) out.push(rec);
   }
   return out;
+}
+
+/** True when `section_reviews` has GI/WW-excluded rows — company has entered the CII review lane (not draft-only payload). */
+function hasRelevantPrimaryDataSectionReviewsStarted(data: Record<string, unknown> | null): boolean {
+  if (!data || typeof data !== "object") return false;
+  return getRelevantPrimarySectionReviews(data).length > 0;
 }
 
 function hasAllChecklistDocumentsUploaded(data: Record<string, unknown> | null): boolean {
@@ -1103,6 +1533,14 @@ function resolveFlowSteps(
   const latestStepDetail = toStepDetail(latestStep);
   const nextStepDetail = toStepDetail(nextStep);
   const profile = (quickView.profile as Record<string, unknown> | undefined) ?? {};
+  const primaryDataWorkflowStatus = computePrimaryDataOverallReviewStatus(primaryDataForm, quickView);
+  const primaryDataSourceForFlow = primaryDataForm ?? quickView;
+  const hasPrimaryDataReadyForFacilitatorFlow =
+    (
+      hasRelevantPrimaryDataSectionReviewsStarted(primaryDataForm) ||
+      primaryDataWorkflowStatus.allSectionsSubmitted ||
+      primaryDataWorkflowStatus.allSectionsAccepted
+    );
   const facilitatorCodeRaw = profile.facilitator_code ?? profile.facilitatorCode ?? quickView.facilitator_code;
   const facilitatorCode = typeof facilitatorCodeRaw === "string" || typeof facilitatorCodeRaw === "number"
     ? String(facilitatorCodeRaw).trim()
@@ -1297,9 +1735,10 @@ function resolveFlowSteps(
                   isLatestInvoiceApprovalAccepted &&
                   hasPaymentReuploadHistory
                 ) {
+                  const flowLabel = capitalizeFinanceFlowLabel(latestInvoiceLabel);
                   return {
                     latest: {
-                      activity: "Re-uploaded 2nd invoice has been accepted",
+                      activity: `Re-uploaded ${flowLabel} has been accepted`,
                       status: "Approved",
                       responsibility: "CII",
                     },
@@ -1315,14 +1754,15 @@ function resolveFlowSteps(
                   isInvoicePaymentSubmitted(latestInvoice) &&
                   isLatestInvoiceApprovalRejected
                 ) {
+                  const flowLabel = capitalizeFinanceFlowLabel(latestInvoiceLabel);
                   return {
                     latest: {
-                      activity: "2nd payment has been rejected by CII",
+                      activity: `${flowLabel} payment has been rejected by CII`,
                       status: "Rejected",
                       responsibility: "CII",
                     },
                     next: {
-                      activity: "2nd payment needs to be re-uploaded by consultant",
+                      activity: `${flowLabel} payment proof needs to be re-uploaded by consultant`,
                       status: "Pending",
                       responsibility: "Consultant",
                     },
@@ -1333,10 +1773,11 @@ function resolveFlowSteps(
                   isInvoicePaymentSubmitted(latestInvoice) &&
                   isLatestInvoiceApprovalPending
                 ) {
+                  const flowLabel = capitalizeFinanceFlowLabel(latestInvoiceLabel);
                   if (hasPaymentReuploadHistory) {
                     return {
                       latest: {
-                        activity: "2nd invoice re-upload has been done",
+                        activity: `${flowLabel} payment re-upload has been done`,
                         status: "Completed",
                         responsibility: "Consultant",
                       },
@@ -1349,14 +1790,45 @@ function resolveFlowSteps(
                   }
                   return {
                     latest: {
-                      activity: "2nd invoice payment done by consultant",
+                      activity: `${flowLabel} payment done by consultant`,
                       status: "Completed",
                       responsibility: "Consultant",
                     },
                     next: {
-                      activity: "2nd invoice needs to be approved or rejected by Admin",
+                      activity: `${flowLabel} needs to be approved or rejected by Admin`,
                       status: "Pending",
                       responsibility: "Admin",
+                    },
+                  };
+                }
+                /** Finance v2: first-cycle proforma/tax invoice already Admin-approved → advance to primary data (uses invoice + approval on same payload). */
+                if (
+                  hasInvoiceHistoryFilename &&
+                  isInvoicePaymentSubmitted(latestInvoice) &&
+                  isLatestInvoiceApprovalAccepted &&
+                  !hasPaymentReuploadHistory
+                ) {
+                  const flowLabel = capitalizeFinanceFlowLabel(latestInvoiceLabel);
+                  if (hasPrimaryDataReadyForFacilitatorFlow) {
+                    return resolveFacilitatorPrimaryDataFlowSteps(
+                      primaryDataSourceForFlow,
+                      checklistDocumentsData,
+                      facilitatorAssessorAssignmentDone,
+                      facilitatorPreliminaryScoringDone,
+                      facilitatorFinalScoringSubmitted,
+                      facilitatorCertificateUploaded,
+                    );
+                  }
+                  return {
+                    latest: {
+                      activity: `${flowLabel} approved by Admin (first invoice)`,
+                      status: "Approved",
+                      responsibility: "Admin",
+                    },
+                    next: {
+                      activity: "Company needs to upload primary data form",
+                      status: "Pending",
+                      responsibility: "Company",
                     },
                   };
                 }
@@ -1379,9 +1851,9 @@ function resolveFlowSteps(
                   };
                 }
                 if (hasApprovedProformaAfterReupload(financeInvoicesData)) {
-                  if (hasPrimaryDataFilledPayload(primaryDataForm) && primaryDataForm) {
+                  if (hasPrimaryDataReadyForFacilitatorFlow) {
                     return resolveFacilitatorPrimaryDataFlowSteps(
-                      primaryDataForm,
+                      primaryDataSourceForFlow,
                       checklistDocumentsData,
                       facilitatorAssessorAssignmentDone,
                       facilitatorPreliminaryScoringDone,
@@ -1417,14 +1889,15 @@ function resolveFlowSteps(
                   };
                 }
                 if (hasProformaPaymentSubmittedPayload(financeInvoicesData)) {
+                  const flowLabel = capitalizeFinanceFlowLabel(latestInvoiceLabel);
                   return {
                     latest: {
-                      activity: "2nd invoice payment done by consultant",
+                      activity: `${flowLabel} payment done by consultant`,
                       status: "Completed",
                       responsibility: "Consultant",
                     },
                     next: {
-                      activity: "2nd invoice needs to be approved or rejected by Admin",
+                      activity: `${flowLabel} needs to be approved or rejected by Admin`,
                       status: "Pending",
                       responsibility: "Admin",
                     },
@@ -1534,7 +2007,7 @@ function resolveFlowSteps(
         return {
           latest: { activity: "Company Filled Registration Info", status: "Completed", responsibility: "Company" },
           next: {
-            activity: "Company Will Upload Work order",
+            activity: "Company Will Upload Contract Document",
             status: "Pending",
             responsibility: "Company",
           },
@@ -1886,22 +2359,36 @@ export default function AssessorProjectQuickViewPage() {
             });
           Promise.allSettled([
             getCompanyProjectPrimaryData(projectId),
+            getAdminProjectPrimaryData(projectId),
             getCompanyProjectPrimaryDataReview(projectId),
+            getAdminProjectPrimaryDataReview(projectId),
           ])
-            .then(([primaryResult, reviewResult]) => {
+            .then(([companyPrimaryResult, adminPrimaryResult, companyReviewResult, adminReviewResult]) => {
               if (cancelled) return;
-              const primaryPayload =
-                primaryResult.status === "fulfilled" ? primaryResult.value : null;
-              const reviewPayload =
-                reviewResult.status === "fulfilled" ? reviewResult.value : null;
               const hasObjectValues = (value: Record<string, unknown> | null): boolean =>
                 Boolean(value && Object.keys(value).length > 0);
-              if (hasObjectValues(primaryPayload)) {
-                setPrimaryDataForm(primaryPayload);
-                return;
-              }
-              if (hasObjectValues(reviewPayload)) {
-                setPrimaryDataForm(reviewPayload);
+              const companyPrimaryPayload =
+                companyPrimaryResult.status === "fulfilled" ? companyPrimaryResult.value : null;
+              const adminPrimaryPayload =
+                adminPrimaryResult.status === "fulfilled" ? adminPrimaryResult.value : null;
+              const companyReviewPayload =
+                companyReviewResult.status === "fulfilled" ? companyReviewResult.value : null;
+              const adminReviewPayload =
+                adminReviewResult.status === "fulfilled" ? adminReviewResult.value : null;
+              const primaryPayload = mergePrimaryDataEndpointPayloads(
+                hasObjectValues(companyPrimaryPayload) ? companyPrimaryPayload : null,
+                hasObjectValues(adminPrimaryPayload) ? adminPrimaryPayload : null,
+              );
+              const reviewPayload = mergePrimaryDataEndpointPayloads(
+                hasObjectValues(companyReviewPayload) ? companyReviewPayload : null,
+                hasObjectValues(adminReviewPayload) ? adminReviewPayload : null,
+              );
+              const merged = mergePrimaryDataEndpointPayloads(
+                hasObjectValues(primaryPayload) ? primaryPayload : null,
+                hasObjectValues(reviewPayload) ? reviewPayload : null,
+              );
+              if (merged && Object.keys(merged).length > 0) {
+                setPrimaryDataForm(merged);
                 return;
               }
               setPrimaryDataForm(null);
@@ -2088,7 +2575,13 @@ export default function AssessorProjectQuickViewPage() {
     !facilitatorCertificateData.failed &&
     hasFacilitatorCertificateUploaded(facilitatorCertificateData.payload);
   const coordinatorAssigned = hasCoordinatorAssignedPayload(quickView, assignments);
-  const flowSteps = resolveFlowSteps(
+  const primaryDataQuickviewReviewStatus = computePrimaryDataOverallReviewStatus(primaryDataForm, quickView);
+  const skipPrimaryDataQuickviewOverride = hasRejectedCiiGatedPrimarySection(primaryDataForm);
+  const hasPrimaryDataQuickviewSignals =
+    Boolean(primaryDataForm) ||
+    primaryDataQuickviewReviewStatus.allSectionsSubmitted ||
+    primaryDataQuickviewReviewStatus.allSectionsAccepted;
+  const flowStepsResolved = resolveFlowSteps(
     quickView,
     latestStep,
     nextStep,
@@ -2107,6 +2600,14 @@ export default function AssessorProjectQuickViewPage() {
     facilitatorFinalScoringSubmitted,
     facilitatorCertificateUploaded,
   );
+  const flowSteps =
+    hasPrimaryDataQuickviewSignals && !skipPrimaryDataQuickviewOverride
+      ? applyPrimaryDataQuickviewCompletionOverride(
+          flowStepsResolved,
+          primaryDataQuickviewReviewStatus,
+          isFacilitatorProject,
+        )
+      : flowStepsResolved;
   const facilitatorCertificateIssuedNextRow =
     isFacilitatorProject && flowSteps.next.activity === "Certificate has been issued";
   const facilitatorNextStepCardTitle = facilitatorCertificateIssuedNextRow ? "Certificate issued" : "Next Step";
@@ -2142,26 +2643,123 @@ export default function AssessorProjectQuickViewPage() {
   const facilitatorFlowSteps: Array<{ label: string; aliases: string[]; responsibility: string }> = [
     { label: "Company Registered by Company", aliases: ["company registered by company", "company registered"], responsibility: "Company" },
     { label: "Company Filled Registration Info", aliases: ["company filled registration info", "registration filled"], responsibility: "Company" },
-    { label: "Company Will Upload Work order", aliases: ["company will upload work order", "contract document need to upload", "contract document upload", "upload contract document"], responsibility: "Company" },
+    { label: "Company Will Upload Contract Document", aliases: ["company will upload work order", "company will upload contract document", "contract document need to upload", "contract document upload", "upload contract document"], responsibility: "Company" },
     { label: "Contract document review", aliases: ["contract document review", "contract review", "contract rejected", "re upload contract", "re-upload contract"], responsibility: "CII" },
     { label: "Contract has been approved", aliases: ["contract has been approved", "contract approved"], responsibility: "Admin" },
     { label: "CII to upload PO amount", aliases: ["cii to upload po amount", "upload po amount"], responsibility: "CII" },
     { label: "Project code need to upload by CII", aliases: ["project code need to upload by cii", "project code need to upload"], responsibility: "CII" },
     { label: "Assign project coordinator", aliases: ["assign project coordinator", "project coordinator assigned"], responsibility: "CII" },
     { label: "Launch and training program need to done by consultant", aliases: ["launch and training", "launch training"], responsibility: "Consultant" },
-    { label: "2nd invoice payment done by consultant", aliases: ["2nd invoice payment done by consultant", "proforma invoice", "pi tax invoice"], responsibility: "Consultant" },
+    {
+      label: "2nd invoice payment done by consultant",
+      aliases: [
+        "2nd invoice payment done by consultant",
+        "proforma invoice payment done by consultant",
+        "tax invoice payment done by consultant",
+        "invoice payment done by consultant",
+        "proforma invoice",
+        "pi tax invoice",
+      ],
+      responsibility: "Consultant",
+    },
     { label: "Supporting document needs to be uploaded", aliases: ["supporting document needs to be uploaded", "supporting document"], responsibility: "Consultant" },
-    { label: "2nd invoice needs to be approved or rejected by Admin", aliases: ["2nd invoice needs to be approved or rejected by admin", "approve reject the proforma invoice", "cii need to approve reject"], responsibility: "Admin" },
-    { label: "2nd payment has been rejected by CII", aliases: ["2nd payment has been rejected by cii", "payment rejected by cii", "rejected"], responsibility: "CII" },
-    { label: "2nd payment needs to be re-uploaded by consultant", aliases: ["2nd payment needs to be re-uploaded by consultant", "re-upload payment by consultant", "payment reupload"], responsibility: "Consultant" },
-    { label: "2nd invoice re-upload has been done", aliases: ["2nd invoice re-upload has been done", "invoice reupload done", "payment reupload done"], responsibility: "Consultant" },
+    {
+      label: "Proforma invoice approved by Admin (first invoice)",
+      aliases: [
+        "proforma invoice approved by admin (first invoice)",
+        "tax invoice approved by admin (first invoice)",
+        "invoice approved by admin (first invoice)",
+        "first proforma invoice approved by admin",
+        "proforma invoice approved by admin",
+      ],
+      responsibility: "Admin",
+    },
+    {
+      label: "2nd invoice needs to be approved or rejected by Admin",
+      aliases: [
+        "2nd invoice needs to be approved or rejected by admin",
+        "proforma invoice needs to be approved or rejected by admin",
+        "tax invoice needs to be approved or rejected by admin",
+        "invoice needs to be approved or rejected by admin",
+        "approve reject the proforma invoice",
+        "cii need to approve reject",
+      ],
+      responsibility: "Admin",
+    },
+    {
+      label: "2nd payment has been rejected by CII",
+      aliases: [
+        "2nd payment has been rejected by cii",
+        "proforma invoice payment has been rejected by cii",
+        "tax invoice payment has been rejected by cii",
+        "payment rejected by cii",
+        "rejected",
+      ],
+      responsibility: "CII",
+    },
+    {
+      label: "2nd payment needs to be re-uploaded by consultant",
+      aliases: [
+        "2nd payment needs to be re-uploaded by consultant",
+        "proforma invoice payment proof needs to be re-uploaded by consultant",
+        "tax invoice payment proof needs to be re-uploaded by consultant",
+        "re-upload payment by consultant",
+        "payment reupload",
+      ],
+      responsibility: "Consultant",
+    },
+    {
+      label: "2nd invoice re-upload has been done",
+      aliases: [
+        "2nd invoice re-upload has been done",
+        "proforma invoice payment re-upload has been done",
+        "tax invoice payment re-upload has been done",
+        "invoice reupload done",
+        "payment reupload done",
+      ],
+      responsibility: "Consultant",
+    },
     { label: "CII need to re-verify and approve or reject the payment", aliases: ["cii need to re-verify and approve or reject the payment", "reverify and approve or reject payment", "re verify payment"], responsibility: "CII" },
-    { label: "Re-uploaded 2nd invoice has been accepted", aliases: ["re-uploaded 2nd invoice has been accepted", "2nd invoice accepted after reupload", "reupload accepted"], responsibility: "CII" },
+    {
+      label: "Re-uploaded 2nd invoice has been accepted",
+      aliases: [
+        "re-uploaded 2nd invoice has been accepted",
+        "re-uploaded proforma invoice has been accepted",
+        "re-uploaded tax invoice has been accepted",
+        "2nd invoice accepted after reupload",
+        "reupload accepted",
+      ],
+      responsibility: "CII",
+    },
     { label: "Plaque and PQ need to be raised by CII", aliases: ["plaque and pq need to be raised by cii", "plaque and pq", "pq raised by cii"], responsibility: "CII" },
     { label: "Plaque and PR has been done", aliases: ["plaque and pr has been done", "plaque and pr done", "pr done"], responsibility: "CII" },
     { label: "Feedback report need to upload by CII", aliases: ["feedback report need to upload by cii", "feedback report upload", "feedback report"], responsibility: "CII" },
     { label: "Feedback done by CII", aliases: ["feedback done by cii", "feedback uploaded", "feedback report done"], responsibility: "CII" },
     { label: "Certificate has been issued", aliases: ["certificate has been issued", "certificate issued", "certificate is issued"], responsibility: "CII" },
+    {
+      label: "Admin Accepted Primary Data Form",
+      aliases: ["admin accepted primary data form", "admin accepted primary data"],
+      responsibility: "CII",
+    },
+    {
+      label: "All Assessment Submittals to be uploaded",
+      aliases: [
+        "all assessment submittals to be uploaded",
+        "all assessment submittals",
+        "assessment submittals to be uploaded",
+      ],
+      responsibility: "Company",
+    },
+    {
+      label: "Company Uploaded All Primary Data",
+      aliases: ["company uploaded all primary data", "uploaded all primary data"],
+      responsibility: "Company",
+    },
+    {
+      label: "Admin Need to Accept Primary Data",
+      aliases: ["admin need to accept primary data", "admin need to accept primary data form"],
+      responsibility: "Admin",
+    },
     { label: "Company needs to upload primary data form", aliases: ["company needs to upload primary data form", "primary data form"], responsibility: "Company" },
     { label: "CII accept or reject primary data form", aliases: ["cii accept or reject primary data form", "primary data accepted", "primary data rejected"], responsibility: "CII" },
   ];

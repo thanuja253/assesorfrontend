@@ -1,7 +1,7 @@
 import Image from "next/image";
 
-/** Public asset used for favicon (see root layout metadata) and brand placeholders. */
-export const GREENCO_LOGO_SRC = "/greenco.png";
+/** Public asset used for favicon and brand placeholders. */
+export const GREENCO_LOGO_SRC = "https://staging.greenco.in/app-assets/images/logo/greenco.png";
 
 type GreencoLogoProps = Readonly<{
   className?: string;
@@ -18,7 +18,9 @@ export function GreencoLogo({
   rounded = "none",
   alt = "Greenco",
 }: GreencoLogoProps) {
-  const roundedClass = rounded === "full" ? "rounded-full" : rounded === "lg" ? "rounded-2xl" : "";
+  let roundedClass = "";
+  if (rounded === "full") roundedClass = "rounded-full";
+  else if (rounded === "lg") roundedClass = "rounded-2xl";
   return (
     <Image
       src={GREENCO_LOGO_SRC}

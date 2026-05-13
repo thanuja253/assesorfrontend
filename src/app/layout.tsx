@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { GREENCO_LOGO_SRC } from "@/components/GreencoLogo";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -16,9 +17,9 @@ export const metadata: Metadata = {
   title: "Facilitator Portal",
   description: "Facilitator authentication portal",
   icons: {
-    icon: "/greenco.png",
-    shortcut: "/greenco.png",
-    apple: "/greenco.png",
+    icon: GREENCO_LOGO_SRC,
+    shortcut: GREENCO_LOGO_SRC,
+    apple: GREENCO_LOGO_SRC,
   },
 };
 

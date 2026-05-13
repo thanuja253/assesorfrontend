@@ -50,12 +50,21 @@ function normalizePayload(data: unknown): Record<string, unknown> {
   return root;
 }
 
+/** When walking alternate API paths, try the next URL on 404 or 5xx (primary route may be down or not deployed). */
+function shouldTryNextAlternatePath(status: number, pathIndex: number, pathsLength: number): boolean {
+  if (pathIndex >= pathsLength - 1) return false;
+  if (status === 404) return true;
+  if (status >= 500 && status <= 599) return true;
+  return false;
+}
+
 async function getJsonFromPaths(paths: string[]): Promise<Record<string, unknown>> {
   const headers = authHeaders();
   let lastStatus = 500;
   let lastData: unknown = null;
 
-  for (const path of paths) {
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i];
     let response: Response;
     try {
       response = await apiFetch(getApiUrl(path), {
@@ -77,7 +86,7 @@ async function getJsonFromPaths(paths: string[]): Promise<Record<string, unknown
     if (response.status === 304) {
       return normalizePayload(data);
     }
-    if (response.status !== 404) {
+    if (!shouldTryNextAlternatePath(response.status, i, paths.length)) {
       break;
     }
   }
@@ -97,8 +106,8 @@ async function getJsonFromPaths(paths: string[]): Promise<Record<string, unknown
 function resolvePrimaryDataApiBaseUrl(): string {
   const fromEnv = process.env.NEXT_PUBLIC_PRIMARY_DATA_API_BASE_URL?.replace(/\/$/, "");
   if (fromEnv) return fromEnv;
-  if (process.env.NODE_ENV === "development") return "http://localhost:3019";
-  return "";
+  /** Same host as other quick-view / auth calls (`NEXT_PUBLIC_API_BASE_URL`, dev default http://localhost:3001). */
+  return getApiUrl("").replace(/\/$/, "");
 }
 
 async function getPrimaryDataJson(path: string): Promise<Record<string, unknown>> {
@@ -130,7 +139,8 @@ async function getJsonFromPublicPaths(paths: string[]): Promise<Record<string, u
   let lastStatus = 500;
   let lastData: unknown = null;
 
-  for (const path of paths) {
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i];
     let response: Response;
     try {
       response = await apiFetch(getApiUrl(path), {
@@ -149,7 +159,7 @@ async function getJsonFromPublicPaths(paths: string[]): Promise<Record<string, u
     if (response.ok) {
       return normalizePayload(data);
     }
-    if (response.status !== 404) {
+    if (!shouldTryNextAlternatePath(response.status, i, paths.length)) {
       break;
     }
   }
@@ -169,7 +179,8 @@ async function postJsonToPaths(
   let lastStatus = 500;
   let lastData: unknown = null;
 
-  for (const path of paths) {
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i];
     let response: Response;
     try {
       response = await apiFetch(getApiUrl(path), {
@@ -189,7 +200,7 @@ async function postJsonToPaths(
     if (response.ok) {
       return normalizePayload(data);
     }
-    if (response.status !== 404) {
+    if (!shouldTryNextAlternatePath(response.status, i, paths.length)) {
       break;
     }
   }
@@ -208,14 +219,21 @@ async function postJsonToPaths(
 
 async function ensureFacilitatorFlowProject(projectId: string): Promise<void> {
   const quickview = await getCompanyProjectQuickView(projectId);
-  const profile =
-    (quickview.profile as Record<string, unknown> | undefined) ??
-    (quickview.project as Record<string, unknown> | undefined) ??
-    quickview;
-  const processType = profile.process_type;
+  const profile = (quickview.profile as Record<string, unknown> | undefined) ?? {};
+  const project = (quickview.project as Record<string, unknown> | undefined) ?? {};
+  const company = (quickview.company as Record<string, unknown> | undefined) ?? {};
+  const processTypeRaw =
+    profile.process_type ??
+    profile.processType ??
+    project.process_type ??
+    project.processType ??
+    company.process_type ??
+    company.processType ??
+    quickview.process_type ??
+    quickview.processType;
   const processTypeText =
-    typeof processType === "string" || typeof processType === "number"
-      ? String(processType).trim().toLowerCase()
+    typeof processTypeRaw === "string" || typeof processTypeRaw === "number"
+      ? String(processTypeRaw).trim().toLowerCase()
       : "";
   if (processTypeText !== "f") {
     throw new AuthApiError(400, "Contract document flow is available only for facilitator projects.");
@@ -229,7 +247,8 @@ async function downloadFromPaths(
   let lastStatus = 500;
   let lastData: unknown = null;
 
-  for (const path of paths) {
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i];
     let response: Response;
     try {
       response = await apiFetch(getApiUrl(path), {
@@ -252,7 +271,7 @@ async function downloadFromPaths(
 
     const data = await parseJsonSafe(response);
     lastData = data;
-    if (response.status !== 404) {
+    if (!shouldTryNextAlternatePath(response.status, i, paths.length)) {
       break;
     }
   }
@@ -278,7 +297,8 @@ async function postFormDataToPaths(
   let lastStatus = 500;
   let lastData: unknown = null;
 
-  for (const path of paths) {
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i];
     let response: Response;
     try {
       response = await apiFetch(getApiUrl(path), {
@@ -298,7 +318,7 @@ async function postFormDataToPaths(
     if (response.ok) {
       return normalizePayload(data);
     }
-    if (response.status !== 404) {
+    if (!shouldTryNextAlternatePath(response.status, i, paths.length)) {
       break;
     }
   }
@@ -323,7 +343,8 @@ async function postFormDataToPublicPaths(
   let lastStatus = 500;
   let lastData: unknown = null;
 
-  for (const path of paths) {
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i];
     let response: Response;
     try {
       response = await apiFetch(getApiUrl(path), {
@@ -343,7 +364,7 @@ async function postFormDataToPublicPaths(
     if (response.ok) {
       return normalizePayload(data);
     }
-    if (response.status !== 404) {
+    if (!shouldTryNextAlternatePath(response.status, i, paths.length)) {
       break;
     }
   }
@@ -422,6 +443,7 @@ export async function getCompanyProjectQuickView(projectId: string): Promise<Rec
   const id = encodeURIComponent(ensureProjectId(projectId));
   return await getJsonFromPaths([
     `/api/company/projects/${id}/quickview`,
+    `/api/company/projects/${id}/quick-view`,
   ]);
 }
 
@@ -437,32 +459,25 @@ export async function getCompanyProjectPrimaryData(projectId: string): Promise<R
   return await getPrimaryDataJson(`/api/company/projects/${id}/primary-data`);
 }
 
+export async function getAdminProjectPrimaryData(projectId: string): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await getPrimaryDataJson(`/api/admin/projects/${id}/primary-data`);
+}
+
 export async function getCompanyProjectFacilitatorRegistrationInfo(projectId: string): Promise<Record<string, unknown>> {
   const id = encodeURIComponent(ensureProjectId(projectId));
-  let response: Response;
-  try {
-    response = await apiFetch(getApiUrl(`/api/company/projects/${id}/facilitator-registration-info`), {
-      method: "GET",
-      headers: { Accept: "application/json" },
-      cache: "no-store",
-    });
-  } catch {
-    throw new AuthApiError(0, "Network error. Please try again.");
-  }
-
-  const data = await parseJsonSafe(response);
-  if (!response.ok) {
-    throw new AuthApiError(
-      response.status || 500,
-      parseApiErrorMessage(data) ?? "Could not load facilitator registration info.",
-    );
-  }
-  return normalizePayload(data);
+  // Use same authenticated GET stack as other company project calls (Bearer was missing here before).
+  return await getJsonFromPaths([`/api/company/projects/${id}/facilitator-registration-info`]);
 }
 
 export async function getCompanyProjectPrimaryDataReview(projectId: string): Promise<Record<string, unknown>> {
   const id = encodeURIComponent(ensureProjectId(projectId));
   return await getPrimaryDataJson(`/api/company/projects/${id}/primary-data/review`);
+}
+
+export async function getAdminProjectPrimaryDataReview(projectId: string): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await getPrimaryDataJson(`/api/admin/projects/${id}/primary-data/review`);
 }
 
 export async function getCompanyProjectProposalWorkorderDocuments(projectId: string): Promise<Record<string, unknown>> {
