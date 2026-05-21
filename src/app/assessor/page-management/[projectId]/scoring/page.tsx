@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { AuthApiError } from "@/lib/auth-api";
+import { refreshAssessorNotifications } from "@/lib/assessor-notifications-api";
 import {
   downloadAssessorFinalScoring,
   downloadAssessorSampleChecklistDocument,
@@ -412,6 +413,7 @@ export default function AssessorProjectScoringPage() {
         rows: payloadRows,
       };
       await finalSubmitAssessorScore(projectId, payload);
+      refreshAssessorNotifications();
       await getCompanyProjectQuickView(projectId);
       const submitLockKey = getSubmitLockStorageKey(projectId, selectedCriteriaId);
       globalThis.window?.sessionStorage?.setItem(submitLockKey, "1");

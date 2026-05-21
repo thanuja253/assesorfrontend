@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { AuthApiError } from "@/lib/auth-api";
+import { refreshAssessorNotifications } from "@/lib/assessor-notifications-api";
 import {
   getAdminProjectRegistrationData,
   getCompanyCoordinators,
@@ -172,6 +173,7 @@ export default function AssessorProjectQuickViewPage() {
     ])
       .then(async ([quickViewPayload, assignmentsPayload, coordinatorsPayload]) => {
         if (cancelled) return;
+        refreshAssessorNotifications();
         setQuickView(quickViewPayload);
         setAssignments(assignmentsPayload);
         const list = pickRecordList(coordinatorsPayload, ["items", "rows", "data", "coordinators", "result"]);
