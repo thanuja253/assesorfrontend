@@ -1,4 +1,11 @@
-import { AUTH_TOKEN_KEY, AUTH_USER_STORAGE_KEY, getAssessorIdFromStoredUser } from "@/lib/auth-user";
+import {
+  AUTH_TOKEN_KEY,
+  AUTH_USER_STORAGE_KEY,
+  getAssessorIdFromStoredUser,
+  getFacilitatorIdFromStoredUser,
+} from "@/lib/auth-user";
+
+
 
 type LoginPayload = {
   email: string;
@@ -344,15 +351,27 @@ export type AssessorProjectListFilters = {
   search?: string;
 };
 
+export type ConsultantProjectListRole = "assessor" | "facilitator";
+
 export type AssessorProjectListParams = AssessorProjectListFilters & {
   draw?: number;
   start?: number;
   length?: number;
   page?: number;
   limit?: number;
+  /** Which portal is calling the list (facilitator vs assessor API paths). */
+  role?: ConsultantProjectListRole;
   /** Assessor MongoDB id for GET /api/assessor/auth/myprojects (backend also accepts assessorId / id). */
   assessor_id?: string;
   assessorId?: string;
+  facilitator_id?: string;
+  facilitatorId?: string;
+  /** Default newest first — sent to myprojects API. */
+  sort_by?: string;
+  sortBy?: string;
+  sort_order?: string;
+  sortOrder?: string;
+  order?: string;
 };
 
 export type AssessorProjectListItem = {
@@ -370,6 +389,7 @@ export type AssessorProjectListItem = {
   sector?: string;
   entity?: string;
   quickview_project_id?: string;
+  created_at?: string;
 };
 
 export type AssessorProjectListResult = {
@@ -392,6 +412,53 @@ function toPositiveNumber(value: unknown, fallback: number): number {
   return fallback;
 }
 
+const DEFAULT_PROJECT_LIST_SORT_BY = "created_at";
+const DEFAULT_PROJECT_LIST_SORT_ORDER = "desc";
+
+function parseProjectSortTimestamp(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value > 1e12 ? value : value * 1000;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return 0;
+    const parsed = Date.parse(trimmed);
+    if (!Number.isNaN(parsed)) return parsed;
+    if (/^[a-fA-F0-9]{24}$/.test(trimmed)) {
+      return Number.parseInt(trimmed.slice(0, 8), 16) * 1000;
+    }
+  }
+  return 0;
+}
+
+function projectListSortKey(item: AssessorProjectListItem): number {
+  const raw = item as Record<string, unknown>;
+  const candidates: unknown[] = [
+    raw.created_at,
+    raw.createdAt,
+    raw.updated_at,
+    raw.updatedAt,
+    raw.registered_at,
+    raw.registeredAt,
+    raw.added_at,
+    raw.addedAt,
+    item.id,
+    item.project_id,
+    item.company_id,
+    item.quickview_project_id,
+  ];
+  let best = 0;
+  for (const candidate of candidates) {
+    const ts = parseProjectSortTimestamp(candidate);
+    if (ts > best) best = ts;
+  }
+  return best;
+}
+
+function sortProjectListNewestFirst(items: AssessorProjectListItem[]): AssessorProjectListItem[] {
+  return [...items].sort((a, b) => projectListSortKey(b) - projectListSortKey(a));
+}
+
 function toProjectListItems(payload: unknown): AssessorProjectListItem[] {
   if (Array.isArray(payload)) {
     return payload as AssessorProjectListItem[];
@@ -406,19 +473,145 @@ function toProjectListItems(payload: unknown): AssessorProjectListItem[] {
   if (Array.isArray(record.items)) {
     return record.items as AssessorProjectListItem[];
   }
+  if (Array.isArray(record.rows)) {
+    return record.rows as AssessorProjectListItem[];
+  }
+  if (Array.isArray(record.companies)) {
+    return record.companies as AssessorProjectListItem[];
+  }
+  if (Array.isArray(record.projects)) {
+    return record.projects as AssessorProjectListItem[];
+  }
   return [];
 }
 
+function myProjectsApiPaths(role: ConsultantProjectListRole): string[] {
+  if (role === "facilitator") {
+    return [
+      "/api/facilitator/auth/myprojects",
+      "/api/facilitator/auth/companylist",
+      "/api/facilitator/auth/company_data",
+      "/api/facilitator/myprojects",
+    ];
+  }
+  return [
+    "/api/assessor/auth/myprojects",
+    "/api/assessor/auth/companylist",
+    "/api/assessor/auth/company_data",
+  ];
+}
+
+function resolveListTotal(
+  responseRecord: Record<string, unknown>,
+  payload: unknown,
+  parsedItems: AssessorProjectListItem[],
+  page: number,
+  limit: number,
+): number {
+  const payloadRecord =
+    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
+  const pagination = (
+    payloadRecord?.pagination && typeof payloadRecord.pagination === "object"
+      ? payloadRecord.pagination
+      : null
+  ) as Record<string, unknown> | null;
+  const rootPagination =
+    responseRecord.pagination && typeof responseRecord.pagination === "object"
+      ? (responseRecord.pagination as Record<string, unknown>)
+      : null;
+  const meta =
+    responseRecord.meta && typeof responseRecord.meta === "object"
+      ? (responseRecord.meta as Record<string, unknown>)
+      : null;
+
+  const explicit =
+    toPositiveNumber(pagination?.total, 0) ||
+    toPositiveNumber(pagination?.total_items, 0) ||
+    toPositiveNumber(pagination?.totalItems, 0) ||
+    toPositiveNumber(pagination?.count, 0) ||
+    toPositiveNumber(rootPagination?.total, 0) ||
+    toPositiveNumber(rootPagination?.total_items, 0) ||
+    toPositiveNumber(rootPagination?.count, 0) ||
+    toPositiveNumber(payloadRecord?.total, 0) ||
+    toPositiveNumber(payloadRecord?.total_items, 0) ||
+    toPositiveNumber(payloadRecord?.totalItems, 0) ||
+    toPositiveNumber(payloadRecord?.count, 0) ||
+    toPositiveNumber(responseRecord.total, 0) ||
+    toPositiveNumber(responseRecord.total_items, 0) ||
+    toPositiveNumber(responseRecord.totalItems, 0) ||
+    toPositiveNumber(responseRecord.count, 0) ||
+    toPositiveNumber(responseRecord.recordsFiltered, 0) ||
+    toPositiveNumber(responseRecord.recordsTotal, 0) ||
+    toPositiveNumber(meta?.total, 0) ||
+    toPositiveNumber(meta?.total_items, 0);
+
+  if (explicit > 0) {
+    return explicit;
+  }
+
+  if (parsedItems.length < limit) {
+    return (page - 1) * limit + parsedItems.length;
+  }
+
+  // Full page without total metadata — allow next page until a short page is returned.
+  return page * limit + 1;
+}
+
+function parseMyProjectsResponse(
+  data: unknown,
+  page: number,
+  limit: number,
+): AssessorProjectListResult {
+  const responseRecord = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+  const payload = responseRecord.data ?? responseRecord;
+  const parsedItems = sortProjectListNewestFirst(
+    toProjectListItems(payload).map(normalizeProjectItem),
+  );
+  const pagination = (
+    payload && typeof payload === "object" ? (payload as Record<string, unknown>).pagination : null
+  ) as Record<string, unknown> | null;
+  const rootPagination = responseRecord.pagination as Record<string, unknown> | undefined;
+
+  const total = resolveListTotal(responseRecord, payload, parsedItems, page, limit);
+
+  const parsedPage =
+    toPositiveNumber(pagination?.page, 0) ||
+    toPositiveNumber(rootPagination?.page, 0) ||
+    toPositiveNumber(responseRecord.page, 0) ||
+    page;
+
+  const parsedLimit =
+    toPositiveNumber(pagination?.limit, 0) ||
+    toPositiveNumber(rootPagination?.limit, 0) ||
+    toPositiveNumber(responseRecord.limit, 0) ||
+    limit;
+
+  return {
+    items: parsedItems,
+    total,
+    page: parsedPage,
+    limit: parsedLimit,
+  };
+}
+
 function normalizeProjectItem(item: AssessorProjectListItem): AssessorProjectListItem {
-  const idValue = item.id ?? (item as { _id?: string })._id;
+  const raw = item as Record<string, unknown>;
+  const idValue = item.id ?? (raw._id as string | undefined);
+  const createdAt =
+    (typeof raw.created_at === "string" && raw.created_at) ||
+    (typeof raw.createdAt === "string" && raw.createdAt) ||
+    (typeof raw.updated_at === "string" && raw.updated_at) ||
+    (typeof raw.updatedAt === "string" && raw.updatedAt) ||
+    undefined;
   return {
     ...item,
     id: idValue,
-    company_id: item.company_id ?? (item as { reg_id?: string }).reg_id,
-    account_status: item.account_status ?? (item as { status?: string | number }).status,
+    company_id: item.company_id ?? (raw.reg_id as string | undefined),
+    account_status: item.account_status ?? (raw.status as string | number | undefined),
     account_status_label:
-      item.account_status_label ?? (item as { status_label?: string }).status_label,
+      item.account_status_label ?? (raw.status_label as string | undefined),
     quickview_project_id: item.quickview_project_id ?? idValue,
+    ...(createdAt ? { created_at: createdAt } : {}),
   };
 }
 
@@ -468,6 +661,14 @@ function mapQuickviewToProjectItem(
   const project = root.project && typeof root.project === "object" ? (root.project as Record<string, unknown>) : {};
 
   const merged = { ...root, ...company, ...project, ...profile };
+  const createdAt = firstString(merged, [
+    "created_at",
+    "createdAt",
+    "registered_at",
+    "registeredAt",
+    "updated_at",
+    "updatedAt",
+  ]);
   return normalizeProjectItem({
     id: firstString(merged, ["project_id", "project_mongo_id", "id", "_id"]) || projectId,
     project_id: firstString(merged, ["project_id", "project_mongo_id", "id", "_id"]) || projectId,
@@ -483,7 +684,8 @@ function mapQuickviewToProjectItem(
     industry: firstString(merged, ["industry", "industry_category"]),
     sector: firstString(merged, ["sector"]),
     entity: firstString(merged, ["entity", "entity_type"]),
-  });
+    ...(createdAt ? { created_at: createdAt } : {}),
+  } as AssessorProjectListItem);
 }
 
 function matchesLocalProjectFilters(row: AssessorProjectListItem, filters: AssessorProjectListFilters): boolean {
@@ -559,7 +761,9 @@ async function listAssignedProjectsFromLoginAssignments(
   }
 
   const cleanedFilters = cleanFiltersForLocal(params);
-  const filtered = rows.filter((row) => matchesLocalProjectFilters(row, cleanedFilters));
+  const filtered = sortProjectListNewestFirst(
+    rows.filter((row) => matchesLocalProjectFilters(row, cleanedFilters)),
+  );
   const page = toPositiveNumber(params.page, 1);
   const limit = toPositiveNumber(params.limit, 10);
   const start = Math.max(0, (page - 1) * limit);
@@ -598,8 +802,23 @@ function toQueryString(params: AssessorProjectListParams): string {
   const turnoverMax = params.turnover_max?.trim() || params.toturnover?.trim() || "";
   const searchValue = params.search?.trim() || "";
 
+  const role = params.role === "facilitator" ? "facilitator" : "assessor";
   const assessorMongoId =
     params.assessor_id?.trim() || params.assessorId?.trim() || getAssessorIdFromStoredUser() || "";
+  const facilitatorMongoId =
+    params.facilitator_id?.trim() ||
+    params.facilitatorId?.trim() ||
+    getFacilitatorIdFromStoredUser() ||
+    "";
+  const ownerMongoId = role === "facilitator" ? facilitatorMongoId : assessorMongoId;
+  const sortBy =
+    params.sort_by?.trim() || params.sortBy?.trim() || DEFAULT_PROJECT_LIST_SORT_BY;
+  const sortOrderRaw =
+    params.sort_order?.trim() ||
+    params.sortOrder?.trim() ||
+    params.order?.trim() ||
+    DEFAULT_PROJECT_LIST_SORT_ORDER;
+  const sortOrder = sortOrderRaw.toLowerCase() === "asc" ? "asc" : "desc";
 
   const map: Record<string, string | number | undefined> = {
     page,
@@ -607,9 +826,18 @@ function toQueryString(params: AssessorProjectListParams): string {
     draw,
     start,
     length,
-    assessor_id: assessorMongoId || undefined,
-    assessorId: assessorMongoId || undefined,
-    id: assessorMongoId || undefined,
+    sort: sortBy,
+    sort_by: sortBy,
+    sortBy: sortBy === "created_at" ? "createdAt" : sortBy,
+    order: sortOrder,
+    sort_order: sortOrder,
+    sortOrder: sortOrder === "desc" ? "DESC" : "ASC",
+    dir: sortOrder,
+    assessor_id: role === "assessor" ? ownerMongoId || undefined : assessorMongoId || undefined,
+    assessorId: role === "assessor" ? ownerMongoId || undefined : assessorMongoId || undefined,
+    facilitator_id: role === "facilitator" ? ownerMongoId || undefined : facilitatorMongoId || undefined,
+    facilitatorId: role === "facilitator" ? ownerMongoId || undefined : facilitatorMongoId || undefined,
+    id: ownerMongoId || undefined,
     company_id: companyId || undefined,
     reg_id: companyId || undefined,
     project_id: params.project_id,
@@ -641,6 +869,8 @@ function toQueryString(params: AssessorProjectListParams): string {
   if (searchValue) {
     query.set("search[value]", searchValue);
   }
+  query.set("order[0][column]", "0");
+  query.set("order[0][dir]", sortOrder);
   return query.toString();
 }
 
@@ -690,18 +920,10 @@ export async function listAssessorProjects(
 
   const page = toPositiveNumber(params.page, 1);
   const limit = toPositiveNumber(params.limit, 10);
+  const role: ConsultantProjectListRole = params.role === "facilitator" ? "facilitator" : "assessor";
 
-  const assignedFromLogin = await listAssignedProjectsFromLoginAssignments(token, params);
-  if (assignedFromLogin) {
-    return assignedFromLogin;
-  }
-
-  const queryString = toQueryString({ ...params, page, limit });
-  const paths = [
-    "/api/assessor/auth/myprojects",
-    "/api/assessor/auth/companylist",
-    "/api/assessor/auth/company_data",
-  ];
+  const queryString = toQueryString({ ...params, page, limit, role });
+  const paths = myProjectsApiPaths(role);
   let response: Response | null = null;
   let data: unknown = null;
   let lastStatus = 500;
@@ -724,42 +946,16 @@ export async function listAssessorProjects(
     }
   }
 
-  if (response?.ok !== true) {
-    throwAssessorProjectsError(lastStatus, data);
+  if (response?.ok === true) {
+    return parseMyProjectsResponse(data, page, limit);
   }
 
-  const responseRecord = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
-  const payload = responseRecord.data;
-  const pagination = (
-    payload && typeof payload === "object" ? (payload as Record<string, unknown>).pagination : null
-  ) as Record<string, unknown> | null;
-  const rootPagination = responseRecord.pagination as Record<string, unknown> | undefined;
-  const parsedItems = toProjectListItems(payload).map(normalizeProjectItem);
+  const assignedFromLogin = await listAssignedProjectsFromLoginAssignments(token, params);
+  if (assignedFromLogin) {
+    return assignedFromLogin;
+  }
 
-  const total =
-    toPositiveNumber(pagination?.total, 0) ||
-    toPositiveNumber(pagination?.total_items, 0) ||
-    toPositiveNumber(rootPagination?.total, 0) ||
-    toPositiveNumber(responseRecord.recordsFiltered, 0) ||
-    toPositiveNumber(responseRecord.recordsTotal, 0) ||
-    parsedItems.length;
-
-  const parsedPage =
-    toPositiveNumber(pagination?.page, 0) ||
-    toPositiveNumber(rootPagination?.page, 0) ||
-    page;
-
-  const parsedLimit =
-    toPositiveNumber(pagination?.limit, 0) ||
-    toPositiveNumber(rootPagination?.limit, 0) ||
-    limit;
-
-  return {
-    items: parsedItems,
-    total,
-    page: parsedPage,
-    limit: parsedLimit,
-  };
+  throwAssessorProjectsError(lastStatus, data);
 }
 
 export type AssessorChangePasswordPayload = {

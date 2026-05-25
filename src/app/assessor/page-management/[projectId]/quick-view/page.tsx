@@ -1,12 +1,23 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
 import { AuthApiError } from "@/lib/auth-api";
+import { useOptionalPanelNotifications } from "@/components/panel-notifications/PanelNotificationsProvider";
+import {
+  parsePrimaryDataRejectionFromNotifications,
+  parsePrimaryDataResubmissionFromNotifications,
+  parsePrimaryDataLatestStateFromNotifications,
+  parseChecklistLatestStateFromNotifications,
+  type PanelNotification,
+} from "@/lib/panel-notifications-api";
 import {
   getFacilitatorFinanceInvoices,
   getFacilitatorFinanceInvoiceApprovalStatus,
   getFacilitatorProjectLaunchTraining,
+  getFacilitatorProjectPrimaryData,
+  getFacilitatorProjectPrimaryDataReview,
   getCompanyProjectPrimaryData,
   getAdminProjectPrimaryData,
   getCompanyProjectPrimaryDataReview,
@@ -14,16 +25,22 @@ import {
   getCompanyProjectChecklistDocuments,
   getCompanyProjectFacilitatorRegistrationInfo,
   getCompanyProjectProjectCode,
-  getCompanyProjectWorkOrderDocument,
+  getFacilitatorProjectQuickView,
+  getProjectQuickView,
+  getProjectSignedContractDocument,
   getCompanyCoordinators,
   getCompanyProjectAssignments,
-  getCompanyProjectQuickView,
   getAdminProjectPDetails,
   getAdminApprovedAssessorsCatalog,
   getAdminProjectCertificate,
   getCompanyAssessmentCriteriaBySector,
   getAdminAssessmentScoring,
 } from "@/lib/assessor-project-api";
+import {
+  bindContractQuickview,
+  contractPhaseToFlowSteps,
+  facilitatorShouldUploadContract,
+} from "@/lib/facilitator-contract-workflow";
 import { KVRow, SectionCard, normalizeRecords, textValue } from "../_ui";
 
 function pickFirstRecord(source: Record<string, unknown>, keys: string[]): Record<string, unknown> {
@@ -694,6 +711,8 @@ type PrimaryDataQuickviewReviewStatus = {
   allSectionsAccepted: boolean;
 };
 
+type FlowStepRow = { activity: string; status: string; responsibility: string };
+
 function derivePrimaryDataWorkflowFlagsFromQuickviewSteps(
   quickView: Record<string, unknown>,
 ): PrimaryDataQuickviewReviewStatus {
@@ -710,17 +729,25 @@ function derivePrimaryDataWorkflowFlagsFromQuickviewSteps(
   const latestStatus = normalizeQuickviewStepBlob(latest.status);
 
   const uploadedByCompany =
-    (
-      latestActivity.includes("uploaded all primary data") ||
-      latestActivity.includes("primary data has been uploaded") ||
-      latestActivity.includes("uploaded primary data")
-    ) &&
-    (latestStatus.includes("complete") || latestStatus.includes("done") || latestStatus.includes("submit"));
+    latestActivity.includes("uploaded all primary data") ||
+    latestActivity.includes("primary data has been uploaded") ||
+    latestActivity.includes("uploaded primary data") ||
+    latestActivity.includes("primary data submitted") ||
+    latestActivity.includes("primary data filled") ||
+    nextActivity.includes("uploaded all primary data") ||
+    nextActivity.includes("accept primary data") ||
+    nextActivity.includes("cii need to accept primary data") ||
+    nextActivity.includes("cii need to accept or reject primary data");
 
   const awaitingAdminAcceptance =
     nextActivity.includes("admin need to accept primary data") ||
     nextActivity.includes("cii need to accept primary data") ||
-    nextActivity.includes("accept primary data");
+    nextActivity.includes("accept primary data") ||
+    (uploadedByCompany &&
+      (latestStatus.includes("complete") ||
+        latestStatus.includes("done") ||
+        latestStatus.includes("submit") ||
+        nextActivity.includes("pending")));
 
   const acceptedByAdmin =
     latestActivity.includes("admin accepted primary data") ||
@@ -736,6 +763,95 @@ function derivePrimaryDataWorkflowFlagsFromQuickviewSteps(
     allSectionsSubmitted: uploadedByCompany || awaitingAdminAcceptance || acceptedByAdmin,
     allSectionsAccepted: acceptedByAdmin,
   };
+}
+
+function collectQuickviewActivityTexts(quickView: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  const pushText = (value: unknown) => {
+    if (typeof value === "string" && value.trim()) {
+      out.push(normalizeQuickviewStepBlob(value));
+      return;
+    }
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const rec = value as Record<string, unknown>;
+      pushText(rec.activity ?? rec.name ?? rec.step ?? rec.title ?? rec.label ?? rec.step_name);
+    }
+  };
+
+  for (const key of ["companies_activty", "companies_activity", "company_activity", "activities", "activity_log"]) {
+    const rows = pickRecordList(quickView, [key]);
+    for (const row of rows) {
+      pushText(row);
+    }
+  }
+
+  const milestoneFlow =
+    (quickView.milestone_flow as Record<string, unknown> | undefined) ??
+    (quickView.milestoneFlow as Record<string, unknown> | undefined);
+  if (milestoneFlow) {
+    pushText(milestoneFlow.latest_step ?? milestoneFlow.latestStep);
+    pushText(milestoneFlow.next_step ?? milestoneFlow.nextStep);
+    const stepsRaw = milestoneFlow.steps ?? milestoneFlow.milestones ?? milestoneFlow.flow;
+    if (Array.isArray(stepsRaw)) {
+      for (const step of stepsRaw) {
+        pushText(step);
+      }
+    }
+  }
+
+  return out;
+}
+
+function derivePrimaryDataWorkflowFlagsFromActivityLog(
+  quickView: Record<string, unknown>,
+): PrimaryDataQuickviewReviewStatus {
+  const texts = collectQuickviewActivityTexts(quickView);
+  let allSectionsSubmitted = false;
+  let allSectionsAccepted = false;
+
+  for (const text of texts) {
+    if (
+      text.includes("primary data section not accepted") ||
+      (text.includes("primary data") &&
+        (text.includes("not accepted") || text.includes("rejected")))
+    ) {
+      allSectionsSubmitted = true;
+      continue;
+    }
+    if (
+      text.includes("uploaded all primary data") ||
+      text.includes("primary data has been uploaded") ||
+      text.includes("primary data submitted") ||
+      text.includes("primary data filled") ||
+      text.includes("company uploaded all primary")
+    ) {
+      allSectionsSubmitted = true;
+    }
+    if (
+      (text.includes("primary data") &&
+        (text.includes("accepted") || text.includes("approved")) &&
+        !text.includes("not accepted")) ||
+      text.includes("cii accepted primary") ||
+      text.includes("admin accepted primary")
+    ) {
+      allSectionsSubmitted = true;
+      allSectionsAccepted = true;
+    }
+  }
+
+  return { allSectionsSubmitted, allSectionsAccepted };
+}
+
+function buildQuickViewPrimaryDataSource(quickView: Record<string, unknown>): Record<string, unknown> {
+  const profile = (quickView.profile as Record<string, unknown> | undefined) ?? {};
+  const project = (quickView.project as Record<string, unknown> | undefined) ?? {};
+  const company = (quickView.company as Record<string, unknown> | undefined) ?? {};
+  const nested = quickView.primary_data ?? quickView.primaryData;
+  const base: Record<string, unknown> = { ...quickView, ...profile, ...project, ...company };
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    return { ...base, ...(nested as Record<string, unknown>) };
+  }
+  return base;
 }
 
 /** Loose boolean parse — mirrors CompanyProjectFlow parseBoolLoose for workflow flags. */
@@ -849,19 +965,87 @@ function computePrimaryDataOverallReviewStatus(
     ...company,
   } as Record<string, unknown>);
   const workflowFromQuickviewSteps = derivePrimaryDataWorkflowFlagsFromQuickviewSteps(quickView);
+  const workflowFromActivityLog = derivePrimaryDataWorkflowFlagsFromActivityLog(quickView);
   const sectionBased = computeSectionBasedCiiGatedReviewStatus(primaryDataForm);
+  const quickViewPrimarySource = buildQuickViewPrimaryDataSource(quickView);
+  const filledFromPrimaryForm = hasPrimaryDataFilledPayload(primaryDataForm);
+  const filledFromQuickView = hasPrimaryDataFilledPayload(quickViewPrimarySource);
 
   return {
     allSectionsSubmitted:
       workflowFromPrimary.allSectionsSubmitted ||
       workflowFromQuickView.allSectionsSubmitted ||
       workflowFromQuickviewSteps.allSectionsSubmitted ||
-      sectionBased.allSectionsSubmitted,
+      workflowFromActivityLog.allSectionsSubmitted ||
+      sectionBased.allSectionsSubmitted ||
+      filledFromPrimaryForm ||
+      filledFromQuickView,
     allSectionsAccepted:
       workflowFromPrimary.allSectionsAccepted ||
       workflowFromQuickView.allSectionsAccepted ||
       workflowFromQuickviewSteps.allSectionsAccepted ||
+      workflowFromActivityLog.allSectionsAccepted ||
       sectionBased.allSectionsAccepted,
+  };
+}
+
+function facilitatorPrimaryDataSubmittedFlowSteps(
+  status: PrimaryDataQuickviewReviewStatus,
+  primaryDataForm: Record<string, unknown> | null,
+  quickView: Record<string, unknown>,
+  primaryDataSourceForFlow: Record<string, unknown>,
+  checklistDocumentsData: Record<string, unknown> | null,
+  facilitatorAssessorAssignmentDone: boolean,
+  facilitatorPreliminaryScoringDone: boolean,
+  facilitatorFinalScoringSubmitted: boolean,
+  facilitatorCertificateUploaded: boolean,
+  facilitatorNotifications: PanelNotification[],
+  projectId: string,
+): { latest: FlowStepRow; next: FlowStepRow } | null {
+  if (status.allSectionsAccepted) {
+    return resolveFacilitatorPrimaryDataFlowSteps(
+      primaryDataSourceForFlow,
+      checklistDocumentsData,
+      facilitatorAssessorAssignmentDone,
+      facilitatorPreliminaryScoringDone,
+      facilitatorFinalScoringSubmitted,
+      facilitatorCertificateUploaded,
+      facilitatorNotifications,
+      projectId,
+    );
+  }
+
+  if (isPrimaryDataInResubmittedAwaitingReview(primaryDataForm, quickView, facilitatorNotifications, projectId)) {
+    return facilitatorPrimaryDataResubmittedFlowSteps(
+      primaryDataForm,
+      quickView,
+      facilitatorNotifications,
+      projectId,
+    );
+  }
+
+  if (hasAnyRejectedPrimaryDataSection(primaryDataForm, quickView, facilitatorNotifications, projectId)) {
+    return facilitatorPrimaryDataRejectedFlowSteps(
+      primaryDataForm,
+      quickView,
+      facilitatorNotifications,
+      projectId,
+    );
+  }
+  if (!status.allSectionsSubmitted && !status.allSectionsAccepted) {
+    return null;
+  }
+  return {
+    latest: {
+      activity: "Company Uploaded All Primary Data",
+      status: "Completed",
+      responsibility: "Company",
+    },
+    next: {
+      activity: "CII need to accept or reject primary data form",
+      status: "Pending",
+      responsibility: "CII",
+    },
   };
 }
 
@@ -872,18 +1056,341 @@ function hasRejectedCiiGatedPrimarySection(primaryDataForm: Record<string, unkno
     const rec = lookupPrimarySectionReview(map, code);
     if (!rec) continue;
     if (isPrimarySectionRejected(rec)) return true;
-    if (normalizePrimaryDataReviewStatusCanonical(
-      rec.status ??
-        rec.review_status ??
-        rec.section_status ??
-        rec.reviewStatus ??
-        rec.approval_status ??
-        rec.approvalStatus,
-    ) === "rejected") {
-      return true;
+  }
+  for (const value of Object.values(map)) {
+    const rec = reviewRecordFromValue(value);
+    if (rec && isPrimarySectionRejected(rec)) return true;
+  }
+  return false;
+}
+
+function textIndicatesPrimaryReupload(text: string): boolean {
+  return (
+    text.includes("re-uploaded primary data") ||
+    text.includes("reuploaded primary data") ||
+    text.includes("re uploaded primary data") ||
+    text.includes("company re-uploaded primary") ||
+    text.includes("primary data re-uploaded") ||
+    text.includes("primary data reuploaded") ||
+    text.includes("primary data resubmitted") ||
+    text.includes("resubmitted primary data")
+  );
+}
+
+function quickviewTextsIndicatePrimaryDataRejected(quickView: Record<string, unknown>): boolean {
+  if (quickviewLatestNextIndicatePrimaryDataRejected(quickView)) return true;
+  return collectQuickviewActivityTexts(quickView).some((text) => {
+    if (textIndicatesPrimaryReupload(text)) return false;
+    if (!text.includes("primary data") && !text.includes("primary-data")) return false;
+    return (
+      text.includes("not accepted") ||
+      text.includes("rejected") ||
+      text.includes("primary data section not accepted") ||
+      text.includes("primary data form has been rejected")
+    );
+  });
+}
+
+function quickviewTextsIndicatePrimaryDataResubmitted(quickView: Record<string, unknown>): boolean {
+  const texts = collectQuickviewActivityTexts(quickView);
+  return texts.some((text) => textIndicatesPrimaryReupload(text));
+}
+
+function quickviewLatestNextIndicatePrimaryDataRejected(quickView: Record<string, unknown>): boolean {
+  const milestoneFlow =
+    (quickView.milestone_flow as Record<string, unknown> | undefined) ??
+    (quickView.milestoneFlow as Record<string, unknown> | undefined) ??
+    {};
+  const latestRaw =
+    milestoneFlow.latest_step ?? milestoneFlow.latestStep ?? quickView.latest_step ?? quickView.latestStep;
+  const nextRaw = milestoneFlow.next_step ?? milestoneFlow.nextStep ?? quickView.next_step ?? quickView.nextStep;
+  const latest = toStepDetail(latestRaw);
+  const next = toStepDetail(nextRaw);
+  const blobs = [latest.activity, latest.status, next.activity, next.status].map(normalizeQuickviewStepBlob);
+  if (blobs.some((text) => textIndicatesPrimaryReupload(text))) return false;
+  return blobs.some((text) => {
+    if (text.includes("primary data section not accepted")) return true;
+    if (!text.includes("primary data") && !text.includes("primary-data")) return false;
+    return text.includes("not accepted") || text.includes("rejected");
+  });
+}
+
+function quickviewLatestNextIndicatePrimaryDataResubmitted(quickView: Record<string, unknown>): boolean {
+  const milestoneFlow =
+    (quickView.milestone_flow as Record<string, unknown> | undefined) ??
+    (quickView.milestoneFlow as Record<string, unknown> | undefined) ??
+    {};
+  const latestRaw =
+    milestoneFlow.latest_step ?? milestoneFlow.latestStep ?? quickView.latest_step ?? quickView.latestStep;
+  const nextRaw = milestoneFlow.next_step ?? milestoneFlow.nextStep ?? quickView.next_step ?? quickView.nextStep;
+  const latest = toStepDetail(latestRaw);
+  const next = toStepDetail(nextRaw);
+  const blobs = [latest.activity, latest.status, next.activity, next.status].map(normalizeQuickviewStepBlob);
+  return blobs.some((text) => textIndicatesPrimaryReupload(text));
+}
+
+function quickviewPayloadIndicatesPrimaryDataRejected(quickView: Record<string, unknown>): boolean {
+  const sources = [
+    quickView,
+    (quickView.profile as Record<string, unknown> | undefined) ?? {},
+    (quickView.project as Record<string, unknown> | undefined) ?? {},
+    (quickView.company as Record<string, unknown> | undefined) ?? {},
+    buildQuickViewPrimaryDataSource(quickView),
+  ];
+  let foundRejection = false;
+  for (const source of sources) {
+    if (!source || typeof source !== "object") continue;
+    const rec = source as Record<string, unknown>;
+    const resubFlag =
+      rec.primary_data_resubmitted ??
+      rec.primaryDataResubmitted ??
+      rec.primary_data_reuploaded ??
+      rec.primaryDataReuploaded;
+    if (resubFlag === true || resubFlag === 1 || resubFlag === "1" || resubFlag === "true") {
+      return false;
+    }
+    const rejectedFlag =
+      rec.primary_data_rejected ??
+      rec.primaryDataRejected ??
+      rec.has_primary_data_rejection ??
+      rec.hasPrimaryDataRejection;
+    if (
+      rejectedFlag === true ||
+      rejectedFlag === 1 ||
+      rejectedFlag === "1" ||
+      rejectedFlag === "true"
+    ) {
+      foundRejection = true;
+    }
+    const rejectedSections = rec.rejected_primary_sections ?? rec.rejectedPrimarySections;
+    if (Array.isArray(rejectedSections) && rejectedSections.length > 0) foundRejection = true;
+  }
+  return foundRejection;
+}
+
+function findFirstRejectedPrimarySectionCode(
+  primaryDataForm: Record<string, unknown> | null,
+  quickView: Record<string, unknown>,
+): string {
+  const sources = [
+    primaryDataForm,
+    buildQuickViewPrimaryDataSource(quickView),
+  ].filter((s): s is Record<string, unknown> => Boolean(s && typeof s === "object"));
+  for (const source of sources) {
+    const map = getPrimarySectionReviewsMap(source);
+    for (const code of CII_GATED_PRIMARY_DATA_SECTION_CODES) {
+      const rec = lookupPrimarySectionReview(map, code);
+      if (rec && isPrimarySectionRejected(rec)) return code.toUpperCase();
+    }
+    for (const [key, value] of Object.entries(map)) {
+      if (EXCLUDED_PRIMARY_FLOW_SECTIONS.has(key.toLowerCase())) continue;
+      const rec = reviewRecordFromValue(value);
+      if (rec && isPrimarySectionRejected(rec)) return key.toUpperCase();
+    }
+  }
+  return "";
+}
+
+function resolvePrimaryDataRejectionSignal(
+  primaryDataForm: Record<string, unknown> | null,
+  quickView: Record<string, unknown>,
+  facilitatorNotifications: PanelNotification[],
+  projectId: string,
+): { rejected: boolean; sectionCode: string } {
+  const fromNotifications = parsePrimaryDataRejectionFromNotifications(
+    facilitatorNotifications,
+    projectId,
+  );
+  if (fromNotifications.rejected) return fromNotifications;
+
+  if (
+    hasRejectedCiiGatedPrimarySection(primaryDataForm) ||
+    hasRejectedCiiGatedPrimarySection(buildQuickViewPrimaryDataSource(quickView)) ||
+    quickviewTextsIndicatePrimaryDataRejected(quickView) ||
+    quickviewPayloadIndicatesPrimaryDataRejected(quickView)
+  ) {
+    return {
+      rejected: true,
+      sectionCode: findFirstRejectedPrimarySectionCode(primaryDataForm, quickView),
+    };
+  }
+
+  return { rejected: false, sectionCode: "" };
+}
+
+function hasAnyRejectedPrimaryDataSection(
+  primaryDataForm: Record<string, unknown> | null,
+  quickView: Record<string, unknown>,
+  facilitatorNotifications: PanelNotification[] = [],
+  projectId = "",
+): boolean {
+  return resolvePrimaryDataRejectionSignal(
+    primaryDataForm,
+    quickView,
+    facilitatorNotifications,
+    projectId,
+  ).rejected;
+}
+
+function facilitatorPrimaryDataRejectedFlowSteps(
+  primaryDataForm: Record<string, unknown> | null,
+  quickView: Record<string, unknown>,
+  facilitatorNotifications: PanelNotification[] = [],
+  projectId = "",
+): { latest: FlowStepRow; next: FlowStepRow } {
+  const signal = resolvePrimaryDataRejectionSignal(
+    primaryDataForm,
+    quickView,
+    facilitatorNotifications,
+    projectId,
+  );
+  const sectionCode =
+    signal.sectionCode || findFirstRejectedPrimarySectionCode(primaryDataForm, quickView);
+  const sectionSuffix = sectionCode ? ` (${sectionCode.toLowerCase()})` : "";
+  return {
+    latest: {
+      activity: sectionSuffix
+        ? `Primary data has been rejected${sectionSuffix}`
+        : "Primary data has been rejected",
+      status: "Rejected",
+      responsibility: "CII",
+    },
+    next: {
+      activity: "Company needs to re-upload primary data form",
+      status: "Pending",
+      responsibility: "Company",
+    },
+  };
+}
+
+/**
+ * Detects if any CII-gated section has been resubmitted after rejection
+ * (API flag `resubmitted_after_rejection` on section_reviews).
+ */
+function hasResubmittedSectionInApiData(
+  primaryDataForm: Record<string, unknown> | null,
+  quickView: Record<string, unknown>,
+): boolean {
+  const sources = [
+    primaryDataForm,
+    buildQuickViewPrimaryDataSource(quickView),
+  ].filter((s): s is Record<string, unknown> => Boolean(s && typeof s === "object"));
+  for (const source of sources) {
+    const map = getPrimarySectionReviewsMap(source);
+    for (const code of CII_GATED_PRIMARY_DATA_SECTION_CODES) {
+      const rec = lookupPrimarySectionReview(map, code);
+      if (rec && hasResubmittedAfterRejectionFlag(rec)) return true;
+    }
+    for (const value of Object.values(map)) {
+      const rec = reviewRecordFromValue(value);
+      if (rec && hasResubmittedAfterRejectionFlag(rec)) return true;
     }
   }
   return false;
+}
+
+/**
+ * Find section code that was resubmitted (for display text like "(tar)").
+ */
+function findResubmittedSectionCode(
+  primaryDataForm: Record<string, unknown> | null,
+  quickView: Record<string, unknown>,
+  facilitatorNotifications: PanelNotification[],
+  projectId: string,
+): string {
+  const fromNotif = parsePrimaryDataResubmissionFromNotifications(facilitatorNotifications, projectId);
+  if (fromNotif.resubmitted && fromNotif.sectionCode) return fromNotif.sectionCode;
+
+  const sources = [
+    primaryDataForm,
+    buildQuickViewPrimaryDataSource(quickView),
+  ].filter((s): s is Record<string, unknown> => Boolean(s && typeof s === "object"));
+  for (const source of sources) {
+    const map = getPrimarySectionReviewsMap(source);
+    for (const code of CII_GATED_PRIMARY_DATA_SECTION_CODES) {
+      const rec = lookupPrimarySectionReview(map, code);
+      if (rec && hasResubmittedAfterRejectionFlag(rec)) return code.toUpperCase();
+    }
+  }
+  return "";
+}
+
+/**
+ * True when a section has status `under_review` after resubmission — CII hasn't decided yet.
+ */
+function hasSectionUnderReviewAfterResubmission(
+  primaryDataForm: Record<string, unknown> | null,
+  quickView: Record<string, unknown>,
+): boolean {
+  const sources = [
+    primaryDataForm,
+    buildQuickViewPrimaryDataSource(quickView),
+  ].filter((s): s is Record<string, unknown> => Boolean(s && typeof s === "object"));
+  for (const source of sources) {
+    const map = getPrimarySectionReviewsMap(source);
+    for (const code of CII_GATED_PRIMARY_DATA_SECTION_CODES) {
+      const rec = lookupPrimarySectionReview(map, code);
+      if (!rec) continue;
+      if (!hasResubmittedAfterRejectionFlag(rec)) continue;
+      const canonical = normalizePrimaryDataReviewStatusCanonical(
+        rec.status ?? rec.review_status ?? rec.section_status ?? rec.reviewStatus ??
+        rec.approval_status ?? rec.approvalStatus,
+      );
+      if (canonical === "under_review" || canonical === "submitted" || canonical === "") return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Comprehensive check: has the company re-uploaded primary data after a rejection,
+ * and CII has NOT yet accepted or re-rejected it?
+ * Sources: notification events, API section flags, quickview text.
+ */
+function isPrimaryDataInResubmittedAwaitingReview(
+  primaryDataForm: Record<string, unknown> | null,
+  quickView: Record<string, unknown>,
+  facilitatorNotifications: PanelNotification[],
+  projectId: string,
+): boolean {
+  const notifState = parsePrimaryDataLatestStateFromNotifications(facilitatorNotifications, projectId);
+  if (notifState.state === "resubmitted") return true;
+
+  if (quickviewLatestNextIndicatePrimaryDataResubmitted(quickView)) return true;
+  if (quickviewTextsIndicatePrimaryDataResubmitted(quickView)) return true;
+
+  if (hasResubmittedSectionInApiData(primaryDataForm, quickView)) {
+    if (hasSectionUnderReviewAfterResubmission(primaryDataForm, quickView)) return true;
+    const status = computeSectionBasedCiiGatedReviewStatus(primaryDataForm);
+    if (!status.allSectionsAccepted) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Flow steps when company has re-uploaded primary data after rejection and CII hasn't decided yet.
+ */
+function facilitatorPrimaryDataResubmittedFlowSteps(
+  primaryDataForm: Record<string, unknown> | null,
+  quickView: Record<string, unknown>,
+  facilitatorNotifications: PanelNotification[],
+  projectId: string,
+): { latest: FlowStepRow; next: FlowStepRow } {
+  const sectionCode = findResubmittedSectionCode(primaryDataForm, quickView, facilitatorNotifications, projectId);
+  const sectionSuffix = sectionCode ? ` (${sectionCode.toLowerCase()})` : "";
+  return {
+    latest: {
+      activity: `Company Re-Uploaded Primary Data${sectionSuffix}`,
+      status: "Completed",
+      responsibility: "Company",
+    },
+    next: {
+      activity: "CII needs to accept or reject re-uploaded primary data",
+      status: "Pending",
+      responsibility: "CII",
+    },
+  };
 }
 
 function normalizeQuickviewStepBlob(text: string): string {
@@ -957,10 +1464,69 @@ function applyPrimaryDataQuickviewCompletionOverride(
   },
   status: PrimaryDataQuickviewReviewStatus,
   isFacilitatorProject: boolean,
+  primaryDataForm: Record<string, unknown> | null,
+  quickView: Record<string, unknown>,
+  facilitatorNotifications: PanelNotification[],
+  projectId: string,
+  checklistDocumentsData: Record<string, unknown> | null = null,
+  facilitatorAssessorAssignmentDone = false,
+  facilitatorPreliminaryScoringDone = false,
+  facilitatorFinalScoringSubmitted = false,
+  facilitatorCertificateUploaded = false,
 ): {
   latest: { activity: string; status: string; responsibility: string };
   next: { activity: string; status: string; responsibility: string };
 } {
+  if (isFacilitatorProject && status.allSectionsAccepted) {
+    const sourceForFlow: Record<string, unknown> = primaryDataForm ?? buildQuickViewPrimaryDataSource(quickView);
+    return resolveFacilitatorPrimaryDataFlowSteps(
+      sourceForFlow,
+      checklistDocumentsData,
+      facilitatorAssessorAssignmentDone,
+      facilitatorPreliminaryScoringDone,
+      facilitatorFinalScoringSubmitted,
+      facilitatorCertificateUploaded,
+      facilitatorNotifications,
+      projectId,
+    );
+  }
+  if (
+    isFacilitatorProject &&
+    isPrimaryDataInResubmittedAwaitingReview(primaryDataForm, quickView, facilitatorNotifications, projectId)
+  ) {
+    return facilitatorPrimaryDataResubmittedFlowSteps(
+      primaryDataForm,
+      quickView,
+      facilitatorNotifications,
+      projectId,
+    );
+  }
+  if (
+    isFacilitatorProject &&
+    hasAnyRejectedPrimaryDataSection(primaryDataForm, quickView, facilitatorNotifications, projectId)
+  ) {
+    return facilitatorPrimaryDataRejectedFlowSteps(
+      primaryDataForm,
+      quickView,
+      facilitatorNotifications,
+      projectId,
+    );
+  }
+  if (isFacilitatorProject && status.allSectionsSubmitted) {
+    return {
+      latest: {
+        activity: "Company Uploaded All Primary Data",
+        status: "Completed",
+        responsibility: "Company",
+      },
+      next: {
+        activity: "CII need to accept or reject primary data form",
+        status: "Pending",
+        responsibility: "CII",
+      },
+    };
+  }
+
   const la = flowSteps.latest.activity;
   const na = flowSteps.next.activity;
   const textInPrimaryLane = combinedFlowActivitiesInPrimaryDataLane(la, na);
@@ -983,7 +1549,9 @@ function applyPrimaryDataQuickviewCompletionOverride(
         responsibility: "CII",
       },
       next: {
-        activity: "All Assessment Submittals to be uploaded",
+        activity: isFacilitatorProject
+          ? "Assessment submittals need to be done by company"
+          : "All Assessment Submittals to be uploaded",
         status: "Pending",
         responsibility: "Company",
       },
@@ -1075,24 +1643,32 @@ function reviewRecordFromValue(value: unknown): Record<string, unknown> | null {
 
 function getPrimarySectionReviewsMap(data: Record<string, unknown>): Record<string, unknown> {
   const root = unwrapPrimaryDataRoot(data);
-  const raw =
-    root.section_reviews ?? root.sectionReviews ?? root.primary_data_section_reviews;
-  if (Array.isArray(raw)) {
-    const map: Record<string, unknown> = {};
-    for (const item of raw) {
-      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-      const rec = item as Record<string, unknown>;
-      const keyRaw = rec.section_key ?? rec.info_type ?? rec.infoType ?? rec.key;
-      if (typeof keyRaw === "string" && keyRaw.trim().length > 0) {
-        map[keyRaw.trim().toLowerCase()] = rec;
+  const map: Record<string, unknown> = {};
+  const ingest = (raw: unknown) => {
+    if (Array.isArray(raw)) {
+      for (const item of raw) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+        const rec = item as Record<string, unknown>;
+        const keyRaw = rec.section_key ?? rec.info_type ?? rec.infoType ?? rec.key;
+        if (typeof keyRaw === "string" && keyRaw.trim().length > 0) {
+          map[keyRaw.trim().toLowerCase()] = rec;
+        }
       }
+      return;
     }
-    return map;
-  }
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return {};
-  }
-  return raw as Record<string, unknown>;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+    const rec = raw as Record<string, unknown>;
+    for (const [key, value] of Object.entries(rec)) {
+      const review = reviewRecordFromValue(value);
+      if (review) map[key.trim().toLowerCase()] = review;
+    }
+  };
+
+  ingest(root.section_reviews ?? root.sectionReviews ?? root.primary_data_section_reviews);
+  ingest(root.reviews_by_info_type ?? root.reviewsByInfoType ?? root.primary_data_reviews);
+  ingest(root.primary_data_section_reviews_map);
+
+  return map;
 }
 
 function normalizePrimarySectionStatus(value: unknown): string {
@@ -1104,13 +1680,34 @@ function normalizePrimarySectionStatus(value: unknown): string {
 
 function isPrimarySectionRejected(review: Record<string, unknown>): boolean {
   const resub = review.resubmitted_after_rejection ?? review.resubmittedAfterRejection;
-  if (resub === true || resub === "true" || resub === 1 || resub === "1") return true;
+  const alreadyResubmitted = resub === true || resub === "true" || resub === 1 || resub === "1";
+  if (alreadyResubmitted) return false;
+
+  const isAcceptedRaw = review.is_accepted ?? review.isAccepted ?? review.accepted;
+  if (isAcceptedRaw === false || isAcceptedRaw === 0 || isAcceptedRaw === "0" || isAcceptedRaw === "false") {
+    return true;
+  }
+  const notAcceptedRaw = review.not_accepted ?? review.notAccepted ?? review.is_not_accepted;
+  if (notAcceptedRaw === true || notAcceptedRaw === 1 || notAcceptedRaw === "1" || notAcceptedRaw === "true") {
+    return true;
+  }
+
   const statusText = normalizePrimarySectionStatus(
-    review.status ?? review.review_status ?? review.section_status ?? review.reviewStatus,
+    review.status ??
+      review.review_status ??
+      review.section_status ??
+      review.reviewStatus ??
+      review.approval_status ??
+      review.approvalStatus ??
+      review.review_status_label ??
+      review.reviewStatusLabel,
   );
   if (!statusText) return false;
+  if (statusText === "2" || statusText === "rejected") return true;
   if (statusText.includes("reject")) return true;
   if (statusText.includes("not accepted")) return true;
+  if (statusText.includes("not_accepted")) return true;
+  if (statusText.includes("not approved")) return true;
   return false;
 }
 
@@ -1196,52 +1793,62 @@ function resolveFacilitatorPrimaryDataFlowSteps(
   facilitatorPreliminaryScoringDone: boolean,
   facilitatorFinalScoringSubmitted: boolean,
   facilitatorCertificateUploaded: boolean,
+  facilitatorNotifications: PanelNotification[] = [],
+  projectId = "",
 ): {
   latest: { activity: string; status: string; responsibility: string };
   next: { activity: string; status: string; responsibility: string };
 } {
   const relevant = getRelevantPrimarySectionReviews(primaryDataForm);
 
-  for (const review of relevant) {
-    if (isPrimarySectionRejected(review)) {
+  const hasResubmittedSection = relevant.some((r) => hasResubmittedAfterRejectionFlag(r));
+  const hasStillRejected = relevant.some((r) => isPrimarySectionRejected(r));
+
+  if (hasStillRejected && !hasResubmittedSection) {
+    return {
+      latest: {
+        activity: "CII rejected the primary data form",
+        status: "Rejected",
+        responsibility: "CII",
+      },
+      next: {
+        activity: "Company needs to re-upload primary data form",
+        status: "Pending",
+        responsibility: "Company",
+      },
+    };
+  }
+
+  const checklistNotif = parseChecklistLatestStateFromNotifications(facilitatorNotifications, projectId);
+  const allAccepted = relevant.length === 0 || relevant.every((r) => isPrimarySectionAccepted(r));
+  if (allAccepted) {
+    const allChecklistAccepted = hasAllChecklistDocumentsAccepted(checklistDocumentsData);
+    const checklistRejectedFromApi = hasRejectedChecklistDocuments(checklistDocumentsData);
+    const checklistRejected = checklistRejectedFromApi || checklistNotif.state === "rejected";
+    const checklistUploadedFromApi = hasAllChecklistDocumentsUploaded(checklistDocumentsData);
+    const checklistUploaded = checklistUploadedFromApi || checklistNotif.state === "uploaded";
+
+    if (!allChecklistAccepted && checklistRejected) {
+      const remarksSuffix = checklistNotif.remarks ? ` — Remarks: ${checklistNotif.remarks}` : "";
       return {
         latest: {
-          activity: "CII rejected the primary data form",
+          activity: `Assessment checklist has been rejected by CII${remarksSuffix}`,
           status: "Rejected",
           responsibility: "CII",
         },
         next: {
-          activity: "Company needs to re-upload primary data form",
+          activity: "Company needs to re-upload assessment checklist documents",
           status: "Pending",
           responsibility: "Company",
         },
       };
     }
-  }
-
-  if (relevant.length > 0) {
-    const allAccepted = relevant.every((r) => isPrimarySectionAccepted(r));
-    if (allAccepted) {
-      const allChecklistAccepted = hasAllChecklistDocumentsAccepted(checklistDocumentsData);
-      if (!allChecklistAccepted && hasRejectedChecklistDocuments(checklistDocumentsData)) {
-        return {
-          latest: {
-            activity: "Checklist documents has been rejected",
-            status: "Rejected",
-            responsibility: "CII",
-          },
-          next: {
-            activity: "Re-upload checklist documents",
-            status: "Pending",
-            responsibility: "Consultant",
-          },
-        };
-      }
-      if (allChecklistAccepted && hasAllChecklistDocumentsUploaded(checklistDocumentsData)) {
-        if (
-          facilitatorAssessorAssignmentDone &&
-          facilitatorPreliminaryScoringDone &&
-          facilitatorFinalScoringSubmitted
+    const checklistAccepted = allChecklistAccepted || checklistNotif.state === "accepted";
+    if (checklistAccepted && (checklistUploaded || checklistUploadedFromApi)) {
+      if (
+        facilitatorAssessorAssignmentDone &&
+        facilitatorPreliminaryScoringDone &&
+        facilitatorFinalScoringSubmitted
         ) {
           if (facilitatorCertificateUploaded) {
             return {
@@ -1311,33 +1918,32 @@ function resolveFacilitatorPrimaryDataFlowSteps(
           },
         };
       }
-      if (hasAllChecklistDocumentsUploaded(checklistDocumentsData)) {
-        return {
-          latest: {
-            activity: "Checklist documents has been uploaded",
-            status: "Completed",
-            responsibility: "Consultant",
-          },
-          next: {
-            activity: "CII need to approve/reject the doc",
-            status: "Pending",
-            responsibility: "CII",
-          },
-        };
-      }
+    if (checklistUploaded || checklistUploadedFromApi) {
       return {
         latest: {
-          activity: "CII accepted the primary data form",
-          status: "Accepted",
-          responsibility: "CII",
+          activity: "Assessment checklist documents uploaded by company",
+          status: "Completed",
+          responsibility: "Company",
         },
         next: {
-          activity: "Assessment submittals need to be done by consultant",
+          activity: "CII needs to approve or reject the assessment submittals",
           status: "Pending",
-          responsibility: "Consultant",
+          responsibility: "CII",
         },
       };
     }
+    return {
+      latest: {
+        activity: "CII accepted the primary data form",
+        status: "Accepted",
+        responsibility: "CII",
+      },
+      next: {
+        activity: "Assessment submittals need to be done by company",
+        status: "Pending",
+        responsibility: "Company",
+      },
+    };
   }
 
   return {
@@ -1352,6 +1958,73 @@ function resolveFacilitatorPrimaryDataFlowSteps(
       responsibility: "CII",
     },
   };
+}
+
+/** Facilitator CI flow — launch & training is done by the facilitator, not CII/consultant. */
+function isLaunchTrainingActivityText(activity: string): boolean {
+  const text = activity.trim().toLowerCase();
+  return (
+    text.includes("launch") &&
+    (text.includes("training") || text.includes("handholding") || text.includes("program"))
+  );
+}
+
+function applyFacilitatorLaunchTrainingResponsibilityOverride(flowSteps: {
+  latest: FlowStepRow;
+  next: FlowStepRow;
+}): { latest: FlowStepRow; next: FlowStepRow } {
+  const patch = (row: FlowStepRow): FlowStepRow => {
+    if (!isLaunchTrainingActivityText(row.activity)) return row;
+    return { ...row, responsibility: "Facilitator" };
+  };
+  return { latest: patch(flowSteps.latest), next: patch(flowSteps.next) };
+}
+
+/** Facilitator only — plaque / feedback / cert issued are end-stage; do not jump here from finance shortcuts. */
+function isFacilitatorLateStageStepText(activity: string): boolean {
+  const text = activity.trim().toLowerCase();
+  return (
+    text.includes("plaque") ||
+    text.includes(" pq") ||
+    text.startsWith("pq ") ||
+    text.includes("feedback report") ||
+    text.includes("certificate has been issued") ||
+    text.includes("certificate issued")
+  );
+}
+
+function tryFacilitatorPrimaryDataLaneSteps(
+  isFacilitatorProject: boolean,
+  hasPrimaryDataReadyForFacilitatorFlow: boolean,
+  primaryDataSourceForFlow: Record<string, unknown>,
+  checklistDocumentsData: Record<string, unknown> | null,
+  facilitatorAssessorAssignmentDone: boolean,
+  facilitatorPreliminaryScoringDone: boolean,
+  facilitatorFinalScoringSubmitted: boolean,
+  facilitatorCertificateUploaded: boolean,
+  facilitatorNotifications: PanelNotification[] = [],
+  projectId = "",
+): {
+  latest: { activity: string; status: string; responsibility: string };
+  next: { activity: string; status: string; responsibility: string };
+} | null {
+  if (!isFacilitatorProject || !hasPrimaryDataReadyForFacilitatorFlow) {
+    return null;
+  }
+  const steps = resolveFacilitatorPrimaryDataFlowSteps(
+    primaryDataSourceForFlow,
+    checklistDocumentsData,
+    facilitatorAssessorAssignmentDone,
+    facilitatorPreliminaryScoringDone,
+    facilitatorFinalScoringSubmitted,
+    facilitatorCertificateUploaded,
+    facilitatorNotifications,
+    projectId,
+  );
+  if (isFacilitatorLateStageStepText(steps.next.activity)) {
+    return null;
+  }
+  return steps;
 }
 
 function detectFacilitatorProject(
@@ -1523,6 +2196,8 @@ function resolveFlowSteps(
   facilitatorPreliminaryScoringDone: boolean,
   facilitatorFinalScoringSubmitted: boolean,
   facilitatorCertificateUploaded: boolean,
+  facilitatorNotifications: PanelNotification[],
+  projectId: string,
 ): {
   latest: { activity: string; status: string; responsibility: string };
   next: { activity: string; status: string; responsibility: string };
@@ -1530,17 +2205,51 @@ function resolveFlowSteps(
   const contractRoot =
     (contractDocument.data as Record<string, unknown> | undefined) ??
     contractDocument;
-  const latestStepDetail = toStepDetail(latestStep);
-  const nextStepDetail = toStepDetail(nextStep);
+
   const profile = (quickView.profile as Record<string, unknown> | undefined) ?? {};
   const primaryDataWorkflowStatus = computePrimaryDataOverallReviewStatus(primaryDataForm, quickView);
   const primaryDataSourceForFlow = primaryDataForm ?? quickView;
   const hasPrimaryDataReadyForFacilitatorFlow =
-    (
-      hasRelevantPrimaryDataSectionReviewsStarted(primaryDataForm) ||
-      primaryDataWorkflowStatus.allSectionsSubmitted ||
-      primaryDataWorkflowStatus.allSectionsAccepted
+    hasRelevantPrimaryDataSectionReviewsStarted(primaryDataForm) ||
+    hasPrimaryDataFilledPayload(primaryDataForm) ||
+    hasPrimaryDataFilledPayload(buildQuickViewPrimaryDataSource(quickView)) ||
+    primaryDataWorkflowStatus.allSectionsSubmitted ||
+    primaryDataWorkflowStatus.allSectionsAccepted;
+
+  if (isFacilitatorProject) {
+    const contractFlow = contractPhaseToFlowSteps(quickView, contractDocument);
+    if (contractFlow) {
+      return contractFlow;
+    }
+
+    if (hasAnyRejectedPrimaryDataSection(primaryDataForm, quickView, facilitatorNotifications, projectId)) {
+      return facilitatorPrimaryDataRejectedFlowSteps(
+        primaryDataForm,
+        quickView,
+        facilitatorNotifications,
+        projectId,
+      );
+    }
+
+    const facilitatorPrimaryLane = tryFacilitatorPrimaryDataLaneSteps(
+      isFacilitatorProject,
+      hasPrimaryDataReadyForFacilitatorFlow,
+      primaryDataSourceForFlow,
+      checklistDocumentsData,
+      facilitatorAssessorAssignmentDone,
+      facilitatorPreliminaryScoringDone,
+      facilitatorFinalScoringSubmitted,
+      facilitatorCertificateUploaded,
+      facilitatorNotifications,
+      projectId,
     );
+    if (facilitatorPrimaryLane) {
+      return facilitatorPrimaryLane;
+    }
+  }
+
+  const latestStepDetail = toStepDetail(latestStep);
+  const nextStepDetail = toStepDetail(nextStep);
   const facilitatorCodeRaw = profile.facilitator_code ?? profile.facilitatorCode ?? quickView.facilitator_code;
   const facilitatorCode = typeof facilitatorCodeRaw === "string" || typeof facilitatorCodeRaw === "number"
     ? String(facilitatorCodeRaw).trim()
@@ -1735,6 +2444,37 @@ function resolveFlowSteps(
                   isLatestInvoiceApprovalAccepted &&
                   hasPaymentReuploadHistory
                 ) {
+                  const facilitatorMidFlow = tryFacilitatorPrimaryDataLaneSteps(
+                    isFacilitatorProject,
+                    hasPrimaryDataReadyForFacilitatorFlow,
+                    primaryDataSourceForFlow,
+                    checklistDocumentsData,
+                    facilitatorAssessorAssignmentDone,
+                    facilitatorPreliminaryScoringDone,
+                    facilitatorFinalScoringSubmitted,
+                    facilitatorCertificateUploaded,
+                    facilitatorNotifications,
+                    projectId,
+                  );
+                  if (facilitatorMidFlow) {
+                    return facilitatorMidFlow;
+                  }
+                  const primaryAfterFinance = facilitatorPrimaryDataSubmittedFlowSteps(
+                    primaryDataWorkflowStatus,
+                    primaryDataForm,
+                    quickView,
+                    primaryDataSourceForFlow,
+                    checklistDocumentsData,
+                    facilitatorAssessorAssignmentDone,
+                    facilitatorPreliminaryScoringDone,
+                    facilitatorFinalScoringSubmitted,
+                    facilitatorCertificateUploaded,
+                    facilitatorNotifications,
+                    projectId,
+                  );
+                  if (primaryAfterFinance) {
+                    return primaryAfterFinance;
+                  }
                   const flowLabel = capitalizeFinanceFlowLabel(latestInvoiceLabel);
                   return {
                     latest: {
@@ -1743,9 +2483,9 @@ function resolveFlowSteps(
                       responsibility: "CII",
                     },
                     next: {
-                      activity: "Plaque and PQ need to be raised by CII",
+                      activity: "Company needs to upload primary data form",
                       status: "Pending",
-                      responsibility: "CII",
+                      responsibility: "Company",
                     },
                   };
                 }
@@ -1817,6 +2557,8 @@ function resolveFlowSteps(
                       facilitatorPreliminaryScoringDone,
                       facilitatorFinalScoringSubmitted,
                       facilitatorCertificateUploaded,
+                      facilitatorNotifications,
+                      projectId,
                     );
                   }
                   return {
@@ -1859,6 +2601,8 @@ function resolveFlowSteps(
                       facilitatorPreliminaryScoringDone,
                       facilitatorFinalScoringSubmitted,
                       facilitatorCertificateUploaded,
+                      facilitatorNotifications,
+                      projectId,
                     );
                   }
                   return {
@@ -1918,9 +2662,9 @@ function resolveFlowSteps(
               }
               return {
                 latest: {
-                  activity: "Launch and training submitted by consultant",
+                  activity: "Launch and training submitted by facilitator",
                   status: "Completed",
-                  responsibility: "Consultant",
+                  responsibility: "Facilitator",
                 },
                 next: {
                   activity: "CII will upload proforma/invoice",
@@ -1936,9 +2680,9 @@ function resolveFlowSteps(
                 responsibility: "CII",
               },
               next: {
-                activity: "Launch and training need to be submitted by consultant",
+                activity: "Launch and training need to be submitted by facilitator",
                 status: "Pending",
-                responsibility: "Consultant",
+                responsibility: "Facilitator",
               },
             };
           }
@@ -2003,13 +2747,23 @@ function resolveFlowSteps(
 
   if (hasFacilitatorRegistrationData) {
     if (isFacilitatorProject) {
+      if (!contractHasDocument && !awaitingCiiReview) {
+        return {
+          latest: { activity: "Company Filled Registration Info", status: "Completed", responsibility: "Company" },
+          next: {
+            activity: "Facilitator to upload signed contract document",
+            status: "Pending",
+            responsibility: "Facilitator",
+          },
+        };
+      }
       if (!facilitatorStageActive) {
         return {
           latest: { activity: "Company Filled Registration Info", status: "Completed", responsibility: "Company" },
           next: {
-            activity: "Company Will Upload Contract Document",
+            activity: "Contract document submitted — awaiting CII",
             status: "Pending",
-            responsibility: "Company",
+            responsibility: "CII",
           },
         };
       }
@@ -2094,6 +2848,8 @@ export default function AssessorProjectQuickViewPage() {
     failed: boolean;
   }>({ loaded: false, payload: null, failed: false });
   const [coordinatorCatalog, setCoordinatorCatalog] = useState<Record<string, unknown>[]>([]);
+  const panelNotifications = useOptionalPanelNotifications();
+  const facilitatorNotificationsForFlow = panelNotifications?.notifications ?? [];
 
   useEffect(() => {
     let cancelled = false;
@@ -2121,6 +2877,7 @@ export default function AssessorProjectQuickViewPage() {
     }
     setLoading(true);
     setError("");
+    const preferFacilitatorQuickview = Boolean(pathname?.includes("/facilitator/"));
     getCompanyProjectFacilitatorRegistrationInfo(projectId)
       .then((regPayload) => {
         if (!cancelled) setFacilitatorRegistration(regPayload);
@@ -2129,7 +2886,9 @@ export default function AssessorProjectQuickViewPage() {
         if (!cancelled) setFacilitatorRegistration(null);
       });
     void Promise.all([
-      getCompanyProjectQuickView(projectId),
+      preferFacilitatorQuickview
+        ? getFacilitatorProjectQuickView(projectId)
+        : getProjectQuickView(projectId, "company"),
       getCompanyProjectAssignments(projectId),
       getCompanyCoordinators(),
     ])
@@ -2248,7 +3007,10 @@ export default function AssessorProjectQuickViewPage() {
             .catch(() => {
               if (!cancelled) setFacilitatorCertificateData({ loaded: true, payload: null, failed: true });
             });
-          getCompanyProjectWorkOrderDocument(projectId)
+          getProjectSignedContractDocument(
+            projectId,
+            preferFacilitatorQuickview || isFacilitator ? "facilitator" : "company",
+          )
             .then((payload) => {
               if (!cancelled) setContractDocument(payload);
             })
@@ -2360,10 +3122,19 @@ export default function AssessorProjectQuickViewPage() {
           Promise.allSettled([
             getCompanyProjectPrimaryData(projectId),
             getAdminProjectPrimaryData(projectId),
+            getFacilitatorProjectPrimaryData(projectId),
             getCompanyProjectPrimaryDataReview(projectId),
             getAdminProjectPrimaryDataReview(projectId),
+            getFacilitatorProjectPrimaryDataReview(projectId),
           ])
-            .then(([companyPrimaryResult, adminPrimaryResult, companyReviewResult, adminReviewResult]) => {
+            .then(([
+              companyPrimaryResult,
+              adminPrimaryResult,
+              facilitatorPrimaryResult,
+              companyReviewResult,
+              adminReviewResult,
+              facilitatorReviewResult,
+            ]) => {
               if (cancelled) return;
               const hasObjectValues = (value: Record<string, unknown> | null): boolean =>
                 Boolean(value && Object.keys(value).length > 0);
@@ -2371,17 +3142,27 @@ export default function AssessorProjectQuickViewPage() {
                 companyPrimaryResult.status === "fulfilled" ? companyPrimaryResult.value : null;
               const adminPrimaryPayload =
                 adminPrimaryResult.status === "fulfilled" ? adminPrimaryResult.value : null;
+              const facilitatorPrimaryPayload =
+                facilitatorPrimaryResult.status === "fulfilled" ? facilitatorPrimaryResult.value : null;
               const companyReviewPayload =
                 companyReviewResult.status === "fulfilled" ? companyReviewResult.value : null;
               const adminReviewPayload =
                 adminReviewResult.status === "fulfilled" ? adminReviewResult.value : null;
+              const facilitatorReviewPayload =
+                facilitatorReviewResult.status === "fulfilled" ? facilitatorReviewResult.value : null;
               const primaryPayload = mergePrimaryDataEndpointPayloads(
-                hasObjectValues(companyPrimaryPayload) ? companyPrimaryPayload : null,
-                hasObjectValues(adminPrimaryPayload) ? adminPrimaryPayload : null,
+                mergePrimaryDataEndpointPayloads(
+                  hasObjectValues(companyPrimaryPayload) ? companyPrimaryPayload : null,
+                  hasObjectValues(adminPrimaryPayload) ? adminPrimaryPayload : null,
+                ),
+                hasObjectValues(facilitatorPrimaryPayload) ? facilitatorPrimaryPayload : null,
               );
               const reviewPayload = mergePrimaryDataEndpointPayloads(
-                hasObjectValues(companyReviewPayload) ? companyReviewPayload : null,
-                hasObjectValues(adminReviewPayload) ? adminReviewPayload : null,
+                mergePrimaryDataEndpointPayloads(
+                  hasObjectValues(companyReviewPayload) ? companyReviewPayload : null,
+                  hasObjectValues(adminReviewPayload) ? adminReviewPayload : null,
+                ),
+                hasObjectValues(facilitatorReviewPayload) ? facilitatorReviewPayload : null,
               );
               const merged = mergePrimaryDataEndpointPayloads(
                 hasObjectValues(primaryPayload) ? primaryPayload : null,
@@ -2441,6 +3222,21 @@ export default function AssessorProjectQuickViewPage() {
       cancelled = true;
     };
   }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId || projectId === "undefined") return;
+    const checklistNotif = parseChecklistLatestStateFromNotifications(
+      facilitatorNotificationsForFlow,
+      projectId,
+    );
+    if (checklistNotif.state !== "none") {
+      getCompanyProjectChecklistDocuments(projectId)
+        .then((payload) => setChecklistDocumentsData(payload))
+        .catch(() => {});
+    }
+  }, [facilitatorNotificationsForFlow, projectId]);
+
+  const contractBinding = useMemo(() => bindContractQuickview(quickView), [quickView]);
 
   if (loading) return <p className="text-sm text-[#667083]">Loading…</p>;
   if (error) return <p className="text-sm text-[#a94442]">{error}</p>;
@@ -2576,9 +3372,17 @@ export default function AssessorProjectQuickViewPage() {
     hasFacilitatorCertificateUploaded(facilitatorCertificateData.payload);
   const coordinatorAssigned = hasCoordinatorAssignedPayload(quickView, assignments);
   const primaryDataQuickviewReviewStatus = computePrimaryDataOverallReviewStatus(primaryDataForm, quickView);
-  const skipPrimaryDataQuickviewOverride = hasRejectedCiiGatedPrimarySection(primaryDataForm);
+  const primaryDataRejectionSignal = resolvePrimaryDataRejectionSignal(
+    primaryDataForm,
+    quickView,
+    facilitatorNotificationsForFlow,
+    projectId,
+  );
+  const primaryDataRejectedForFacilitator =
+    isFacilitatorProject && primaryDataRejectionSignal.rejected;
   const hasPrimaryDataQuickviewSignals =
     Boolean(primaryDataForm) ||
+    hasPrimaryDataFilledPayload(buildQuickViewPrimaryDataSource(quickView)) ||
     primaryDataQuickviewReviewStatus.allSectionsSubmitted ||
     primaryDataQuickviewReviewStatus.allSectionsAccepted;
   const flowStepsResolved = resolveFlowSteps(
@@ -2599,15 +3403,44 @@ export default function AssessorProjectQuickViewPage() {
     facilitatorPreliminaryScoringDone,
     facilitatorFinalScoringSubmitted,
     facilitatorCertificateUploaded,
+    facilitatorNotificationsForFlow,
+    projectId,
   );
-  const flowSteps =
-    hasPrimaryDataQuickviewSignals && !skipPrimaryDataQuickviewOverride
-      ? applyPrimaryDataQuickviewCompletionOverride(
-          flowStepsResolved,
-          primaryDataQuickviewReviewStatus,
-          isFacilitatorProject,
-        )
-      : flowStepsResolved;
+  let flowSteps = flowStepsResolved;
+  if (isFacilitatorProject && primaryDataRejectedForFacilitator) {
+    flowSteps = facilitatorPrimaryDataRejectedFlowSteps(
+      primaryDataForm,
+      quickView,
+      facilitatorNotificationsForFlow,
+      projectId,
+    );
+  } else if (hasPrimaryDataQuickviewSignals) {
+    flowSteps = applyPrimaryDataQuickviewCompletionOverride(
+      flowStepsResolved,
+      primaryDataQuickviewReviewStatus,
+      isFacilitatorProject,
+      primaryDataForm,
+      quickView,
+      facilitatorNotificationsForFlow,
+      projectId,
+      checklistDocumentsData,
+      facilitatorAssessorAssignmentDone,
+      facilitatorPreliminaryScoringDone,
+      facilitatorFinalScoringSubmitted,
+      facilitatorCertificateUploaded,
+    );
+  }
+  if (isFacilitatorProject) {
+    flowSteps = applyFacilitatorLaunchTrainingResponsibilityOverride(flowSteps);
+    if (primaryDataRejectedForFacilitator) {
+      flowSteps = facilitatorPrimaryDataRejectedFlowSteps(
+        primaryDataForm,
+        quickView,
+        facilitatorNotificationsForFlow,
+        projectId,
+      );
+    }
+  }
   const facilitatorCertificateIssuedNextRow =
     isFacilitatorProject && flowSteps.next.activity === "Certificate has been issued";
   const facilitatorNextStepCardTitle = facilitatorCertificateIssuedNextRow ? "Certificate issued" : "Next Step";
@@ -2635,6 +3468,11 @@ export default function AssessorProjectQuickViewPage() {
     .filter((item) => hasDisplayValue(item.rowStatus));
   const showStepStatusSection = visibleMilestoneRows.length > 0;
   const showLatestNextStepSection = true;
+  const showContractUploadCta =
+    isFacilitatorProject && facilitatorShouldUploadContract(quickView, contractDocument);
+  const contractDocumentHref = pathname?.includes("/facilitator/")
+    ? `/facilitator/page-management/${encodeURIComponent(projectId)}/contract-document`
+    : `/assessor/page-management/${encodeURIComponent(projectId)}/contract-document`;
   const showCoordinatorSection =
     hasDisplayValue(coordinatorResolved.name ?? coordinatorResolved.coordinator_name) ||
     hasDisplayValue(coordinatorResolved.email) ||
@@ -2649,7 +3487,18 @@ export default function AssessorProjectQuickViewPage() {
     { label: "CII to upload PO amount", aliases: ["cii to upload po amount", "upload po amount"], responsibility: "CII" },
     { label: "Project code need to upload by CII", aliases: ["project code need to upload by cii", "project code need to upload"], responsibility: "CII" },
     { label: "Assign project coordinator", aliases: ["assign project coordinator", "project coordinator assigned"], responsibility: "CII" },
-    { label: "Launch and training program need to done by consultant", aliases: ["launch and training", "launch training"], responsibility: "Consultant" },
+    {
+      label: "Launch and training program need to be done by facilitator",
+      aliases: [
+        "launch and training",
+        "launch training",
+        "launch and training need to be submitted by consultant",
+        "launch and training need to be submitted by facilitator",
+        "launch and training submitted by consultant",
+        "launch and training submitted by facilitator",
+      ],
+      responsibility: "Facilitator",
+    },
     {
       label: "2nd invoice payment done by consultant",
       aliases: [
@@ -2860,6 +3709,11 @@ export default function AssessorProjectQuickViewPage() {
 
           {showLatestNextStepSection && (
             <SectionCard title="Latest / Next Step">
+              {contractBinding.mode === "facilitator_contract" && contractBinding.instruction ? (
+                <p className="mb-3 rounded border border-[#d5e8dc] bg-[#f4faf6] px-3 py-2 text-xs text-[#2d6a3e]">
+                  {contractBinding.instruction}
+                </p>
+              ) : null}
               <KVRow
                 label="Latest Step"
                 value={`${flowSteps.latest.activity} (${flowSteps.latest.status} - ${flowSteps.latest.responsibility})`}
@@ -2872,6 +3726,20 @@ export default function AssessorProjectQuickViewPage() {
               />
             </SectionCard>
           )}
+        </div>
+      ) : null}
+
+      {showContractUploadCta ? (
+        <div className="rounded border border-[#b8dfc9] bg-[#f4faf6] px-4 py-3">
+          <p className="text-sm font-medium text-[#2d6a3e]">
+            Upload your signed contract (PDF, max 10MB) on the Contract Document tab.
+          </p>
+          <Link
+            href={contractDocumentHref}
+            className="mt-2 inline-flex rounded bg-[#2f8f4e] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#267641]"
+          >
+            Open Contract Document →
+          </Link>
         </div>
       ) : null}
 

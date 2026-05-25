@@ -73,6 +73,41 @@ export function getAssessorIdFromStoredUser(): string | null {
   return normalized[0] ?? null;
 }
 
+/** Mongo id from login `user` for facilitator myprojects (same shape as assessor). */
+export function getFacilitatorIdFromStoredUser(): string | null {
+  const user = parseAuthUserFromStorage();
+  if (!user) {
+    return null;
+  }
+  const pick = (value: unknown): string | null => {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+    if (value && typeof value === "object" && "$oid" in (value as Record<string, unknown>)) {
+      const oid = (value as { $oid?: string }).$oid;
+      if (typeof oid === "string" && oid.trim()) {
+        return oid.trim();
+      }
+    }
+    return null;
+  };
+
+  const rawCandidates = [
+    user.facilitator_id,
+    user.facilitatorId,
+    user.consultant_id,
+    user.consultantId,
+    user.id,
+    user._id,
+  ];
+  const normalized = rawCandidates.map(pick).filter((value): value is string => Boolean(value));
+  const mongoId = normalized.find((value) => isMongoObjectId(value));
+  if (mongoId) {
+    return mongoId;
+  }
+  return normalized[0] ?? null;
+}
+
 /** Text before @ for display (e.g. login email); if no @, returns trimmed input. */
 export function loginHandleFromStoredEmail(emailOrLogin: string): string {
   const trimmed = emailOrLogin.trim();

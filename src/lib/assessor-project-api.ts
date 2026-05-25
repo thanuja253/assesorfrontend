@@ -218,7 +218,7 @@ async function postJsonToPaths(
 }
 
 async function ensureFacilitatorFlowProject(projectId: string): Promise<void> {
-  const quickview = await getCompanyProjectQuickView(projectId);
+  const quickview = await getFacilitatorProjectQuickView(projectId);
   const profile = (quickview.profile as Record<string, unknown> | undefined) ?? {};
   const project = (quickview.project as Record<string, unknown> | undefined) ?? {};
   const company = (quickview.company as Record<string, unknown> | undefined) ?? {};
@@ -439,12 +439,144 @@ export async function getAssessorProjectTabData(
   return await getJsonFromPaths(tabPaths(projectId, tab));
 }
 
+export type ProjectQuickviewPanel = "company" | "facilitator" | "admin";
+
 export async function getCompanyProjectQuickView(projectId: string): Promise<Record<string, unknown>> {
+  return getProjectQuickView(projectId, "company");
+}
+
+/** GET quickview — facilitator panel uses /api/facilitator/projects/:id/quickview. */
+export async function getFacilitatorProjectQuickView(projectId: string): Promise<Record<string, unknown>> {
+  return getProjectQuickView(projectId, "facilitator");
+}
+
+export async function getAdminProjectQuickView(projectId: string): Promise<Record<string, unknown>> {
+  return getProjectQuickView(projectId, "admin");
+}
+
+export async function getProjectQuickView(
+  projectId: string,
+  panel: ProjectQuickviewPanel = "company",
+): Promise<Record<string, unknown>> {
   const id = encodeURIComponent(ensureProjectId(projectId));
+  if (panel === "facilitator") {
+    return await getJsonFromPaths([
+      `/api/facilitator/projects/${id}/quickview`,
+      `/api/company/projects/${id}/quickview`,
+      `/api/company/projects/${id}/quick-view`,
+    ]);
+  }
+  if (panel === "admin") {
+    return await getJsonFromPaths([
+      `/api/admin/projects/${id}/quickview`,
+      `/api/admin/projects/${id}/quick-view`,
+    ]);
+  }
   return await getJsonFromPaths([
     `/api/company/projects/${id}/quickview`,
     `/api/company/projects/${id}/quick-view`,
   ]);
+}
+
+/** Facilitator contract — GET /api/facilitator/projects/:id/signed-contract-document */
+export async function getFacilitatorSignedContractDocument(
+  projectId: string,
+): Promise<Record<string, unknown>> {
+  await ensureFacilitatorFlowProject(projectId);
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await getJsonFromPaths([`/api/facilitator/projects/${id}/signed-contract-document`]);
+}
+
+/** Facilitator first upload — field contract_document (PDF, max 10MB enforced server-side). */
+export async function uploadFacilitatorSignedContractDocument(
+  projectId: string,
+  contractDocument: File,
+): Promise<Record<string, unknown>> {
+  await ensureFacilitatorFlowProject(projectId);
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  const formData = new FormData();
+  formData.set("contract_document", contractDocument);
+  return await postFormDataToPaths(
+    [`/api/facilitator/projects/${id}/signed-contract-document`],
+    formData,
+    "POST",
+  );
+}
+
+/** Facilitator re-upload after CII reject — wo_status === 2. */
+export async function reuploadFacilitatorSignedContractDocument(
+  projectId: string,
+  contractDocument: File,
+): Promise<Record<string, unknown>> {
+  await ensureFacilitatorFlowProject(projectId);
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  const formData = new FormData();
+  formData.set("contract_document", contractDocument);
+  return await postFormDataToPaths(
+    [`/api/facilitator/projects/${id}/signed-contract-document/reupload`],
+    formData,
+    "POST",
+  );
+}
+
+/** Admin — GET /api/admin/projects/:id/facilitator-signed-contract */
+export async function getAdminFacilitatorSignedContract(
+  projectId: string,
+): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await getJsonFromPaths([`/api/admin/projects/${id}/facilitator-signed-contract`]);
+}
+
+/** Admin — PATCH review { wo_status: 1|2, wo_remarks? } */
+export async function reviewAdminFacilitatorSignedContract(
+  projectId: string,
+  payload: { wo_status: 1 | 2; wo_remarks?: string },
+): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  const body: Record<string, unknown> = { wo_status: payload.wo_status };
+  if (payload.wo_status === 2) {
+    body.wo_remarks = payload.wo_remarks?.trim() ?? "";
+  }
+  return await postJsonToPaths(
+    [`/api/admin/projects/${id}/facilitator-signed-contract/review`],
+    body,
+    "PATCH",
+  );
+}
+
+/** Admin — GET acceptance (PO form state). */
+export async function getAdminFacilitatorSignedContractAcceptance(
+  projectId: string,
+): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await getJsonFromPaths([`/api/admin/projects/${id}/facilitator-signed-contract/acceptance`]);
+}
+
+/** Admin — PATCH acceptance { wo_po_number, wo_acceptance_date }. */
+export async function saveAdminFacilitatorSignedContractAcceptance(
+  projectId: string,
+  payload: { wo_po_number: string; wo_acceptance_date: string },
+): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await postJsonToPaths(
+    [`/api/admin/projects/${id}/facilitator-signed-contract/acceptance`],
+    {
+      wo_po_number: payload.wo_po_number,
+      wo_acceptance_date: payload.wo_acceptance_date,
+    },
+    "PATCH",
+  );
+}
+
+/** Load contract doc for panel — facilitator uses signed-contract-document only. */
+export async function getProjectSignedContractDocument(
+  projectId: string,
+  panel: ProjectQuickviewPanel,
+): Promise<Record<string, unknown>> {
+  if (panel === "facilitator") {
+    return getFacilitatorSignedContractDocument(projectId);
+  }
+  return getCompanyProjectWorkOrderDocument(projectId);
 }
 
 export async function getAdminProjectPDetails(projectId: string): Promise<Record<string, unknown>> {
@@ -478,6 +610,75 @@ export async function getCompanyProjectPrimaryDataReview(projectId: string): Pro
 export async function getAdminProjectPrimaryDataReview(projectId: string): Promise<Record<string, unknown>> {
   const id = encodeURIComponent(ensureProjectId(projectId));
   return await getPrimaryDataJson(`/api/admin/projects/${id}/primary-data/review`);
+}
+
+/** Facilitator panel — primary data snapshot (falls back if route not deployed). */
+export async function getFacilitatorProjectPrimaryData(projectId: string): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  let lastStatus = 500;
+  let lastData: unknown = null;
+  const paths = [
+    `/api/facilitator/projects/${id}/primary-data`,
+    `/api/facilitators/projects/${id}/primary-data`,
+  ];
+  const headers = authHeaders();
+  const base = resolvePrimaryDataApiBaseUrl();
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i];
+    let response: Response;
+    try {
+      response = await apiFetch(`${base}${path}?_ts=${Date.now()}`, {
+        method: "GET",
+        headers: { ...headers, "Cache-Control": "no-cache", Pragma: "no-cache" },
+        cache: "no-store",
+      });
+    } catch {
+      throw new AuthApiError(0, "Network error. Please try again.");
+    }
+    lastStatus = response.status;
+    const data = await parseJsonSafe(response);
+    lastData = data;
+    if (response.ok || response.status === 304) {
+      return normalizePayload(data);
+    }
+    if (shouldTryNextAlternatePath(response.status, i, paths.length)) continue;
+    break;
+  }
+  throw new AuthApiError(lastStatus || 500, parseApiErrorMessage(lastData) ?? "Could not load primary data.");
+}
+
+export async function getFacilitatorProjectPrimaryDataReview(projectId: string): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  let lastStatus = 500;
+  let lastData: unknown = null;
+  const paths = [
+    `/api/facilitator/projects/${id}/primary-data/review`,
+    `/api/facilitators/projects/${id}/primary-data/review`,
+  ];
+  const headers = authHeaders();
+  const base = resolvePrimaryDataApiBaseUrl();
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i];
+    let response: Response;
+    try {
+      response = await apiFetch(`${base}${path}?_ts=${Date.now()}`, {
+        method: "GET",
+        headers: { ...headers, "Cache-Control": "no-cache", Pragma: "no-cache" },
+        cache: "no-store",
+      });
+    } catch {
+      throw new AuthApiError(0, "Network error. Please try again.");
+    }
+    lastStatus = response.status;
+    const data = await parseJsonSafe(response);
+    lastData = data;
+    if (response.ok || response.status === 304) {
+      return normalizePayload(data);
+    }
+    if (shouldTryNextAlternatePath(response.status, i, paths.length)) continue;
+    break;
+  }
+  throw new AuthApiError(lastStatus || 500, parseApiErrorMessage(lastData) ?? "Could not load primary data review.");
 }
 
 export async function getCompanyProjectProposalWorkorderDocuments(projectId: string): Promise<Record<string, unknown>> {

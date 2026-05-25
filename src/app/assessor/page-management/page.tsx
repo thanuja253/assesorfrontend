@@ -1,12 +1,14 @@
 "use client";
 
 import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { usePathname } from "next/navigation";
 import {
   AuthApiError,
   getApiUrl,
   listAssessorProjects,
   type AssessorProjectListFilters,
   type AssessorProjectListItem,
+  type ConsultantProjectListRole,
 } from "@/lib/auth-api";
 import { AUTH_TOKEN_KEY } from "@/lib/auth-user";
 
@@ -34,7 +36,100 @@ const DEFAULT_FILTERS: FiltersState = {
 };
 
 const DEFAULT_PAGE_SIZE = 10;
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
 type Option = { value: string; label: string };
+
+function ProjectListPagination({
+  page,
+  pageSize,
+  total,
+  totalPages,
+  start,
+  end,
+  onPageChange,
+  onPageSizeChange,
+}: Readonly<{
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  start: number;
+  end: number;
+  onPageChange: (next: number) => void;
+  onPageSizeChange: (next: number) => void;
+}>) {
+  const pageNumbers = useMemo(() => {
+    const maxButtons = 5;
+    let from = Math.max(1, page - Math.floor(maxButtons / 2));
+    const to = Math.min(totalPages, from + maxButtons - 1);
+    from = Math.max(1, to - maxButtons + 1);
+    const nums: number[] = [];
+    for (let i = from; i <= to; i += 1) {
+      nums.push(i);
+    }
+    return nums;
+  }, [page, totalPages]);
+
+  if (total === 0) {
+    return null;
+  }
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#e5eaf1] px-1 pt-3">
+      <p className="text-xs text-[#6b7280]">
+        Showing <span className="font-medium text-[#2f3a46]">{start}</span>–
+        <span className="font-medium text-[#2f3a46]">{end}</span> of{" "}
+        <span className="font-medium text-[#2f3a46]">{total}</span> projects
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-1.5 text-xs text-[#6b7280]">
+          Rows
+          <select
+            value={pageSize}
+            onChange={(e) => onPageSizeChange(Number(e.target.value))}
+            className="rounded border border-[#d8dfe9] bg-white px-2 py-1 text-xs text-[#2f3a46] outline-none focus:border-[#5f9f77]"
+          >
+            {PAGE_SIZE_OPTIONS.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          disabled={page <= 1}
+          onClick={() => onPageChange(page - 1)}
+          className="rounded border border-[#ccd6e4] bg-white px-2.5 py-1 text-xs text-[#4b5563] disabled:cursor-not-allowed disabled:opacity-40 hover:bg-[#f8fafc]"
+        >
+          Previous
+        </button>
+        {pageNumbers.map((num) => (
+          <button
+            key={num}
+            type="button"
+            onClick={() => onPageChange(num)}
+            className={`min-w-[2rem] rounded border px-2 py-1 text-xs ${
+              num === page
+                ? "border-[#2f8f4e] bg-[#2f8f4e] font-medium text-white"
+                : "border-[#ccd6e4] bg-white text-[#4b5563] hover:bg-[#f8fafc]"
+            }`}
+          >
+            {num}
+          </button>
+        ))}
+        <button
+          type="button"
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(page + 1)}
+          className="rounded border border-[#ccd6e4] bg-white px-2.5 py-1 text-xs text-[#4b5563] disabled:cursor-not-allowed disabled:opacity-40 hover:bg-[#f8fafc]"
+        >
+          Next
+        </button>
+      </div>
+    </div>
+  );
+}
 const DEFAULT_ACCOUNT_STATUS_OPTIONS: Option[] = [
   { value: "1", label: "Active" },
   { value: "0", label: "In Active" },
@@ -225,6 +320,11 @@ function resolveQuickViewProjectId(row: AssessorProjectListItem): string {
 }
 
 export default function AssessorProjectManagementPage() {
+  const pathname = usePathname();
+  const listRole: ConsultantProjectListRole = pathname?.includes("/facilitator/")
+    ? "facilitator"
+    : "assessor";
+
   const [draftFilters, setDraftFilters] = useState<FiltersState>(DEFAULT_FILTERS);
   const [appliedFilters, setAppliedFilters] = useState<FiltersState>(DEFAULT_FILTERS);
   const [rows, setRows] = useState<AssessorProjectListItem[]>([]);
@@ -244,6 +344,12 @@ export default function AssessorProjectManagementPage() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   useEffect(() => {
+    if (total > 0 && page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [page, total, totalPages]);
+
+  useEffect(() => {
     let cancelled = false;
     const load = async () => {
       setLoading(true);
@@ -251,6 +357,7 @@ export default function AssessorProjectManagementPage() {
       try {
         const result = await listAssessorProjects({
           ...cleanFilters(appliedFilters),
+          role: listRole,
           draw: page,
           start: (page - 1) * pageSize,
           length: pageSize,
@@ -283,7 +390,7 @@ export default function AssessorProjectManagementPage() {
     return () => {
       cancelled = true;
     };
-  }, [appliedFilters, page, pageSize]);
+  }, [appliedFilters, page, pageSize, listRole]);
 
   useEffect(() => {
     let cancelled = false;
@@ -801,6 +908,20 @@ export default function AssessorProjectManagementPage() {
             <tbody className="divide-y divide-[#edf1f6]">{tableContent}</tbody>
           </table>
         </div>
+
+        <ProjectListPagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          totalPages={totalPages}
+          start={start}
+          end={end}
+          onPageChange={setPage}
+          onPageSizeChange={(next) => {
+            setPageSize(next);
+            setPage(1);
+          }}
+        />
       </div>
     </section>
   );
