@@ -2337,6 +2337,220 @@ function hasFeedbackReportUploaded(quickView: Record<string, unknown>): boolean 
   return false;
 }
 
+function isCiiAssignsFacilitatorFlow(quickView: Record<string, unknown>): boolean {
+  const profile = (quickView.profile as Record<string, unknown> | undefined) ?? {};
+  const project = (quickView.project as Record<string, unknown> | undefined) ?? {};
+  const company = (quickView.company as Record<string, unknown> | undefined) ?? {};
+  const milestoneFlow = (quickView.milestone_flow as Record<string, unknown> | undefined) ?? {};
+  const flowTypeCandidates: unknown[] = [
+    profile.flow_type, profile.flowType, profile.flow_id, profile.flowId,
+    project.flow_type, project.flowType, project.flow_id, project.flowId,
+    company.flow_type, company.flowType, company.flow_id, company.flowId,
+    quickView.flow_type, quickView.flowType, quickView.flow_id, quickView.flowId,
+    milestoneFlow.flow_type, milestoneFlow.flowType,
+  ];
+  for (const candidate of flowTypeCandidates) {
+    const text =
+      typeof candidate === "string" || typeof candidate === "number"
+        ? String(candidate).trim()
+        : "";
+    if (text === "2") return true;
+  }
+  const activityId = resolveFacilitatorStageActivityId(quickView);
+  if (activityId !== null && activityId >= 62 && activityId <= 66) return true;
+  return false;
+}
+
+function resolveFlow2ContractFeeRejection(quickView: Record<string, unknown>): boolean {
+  const profile = (quickView.profile as Record<string, unknown> | undefined) ?? {};
+  const candidateKeys = [
+    "contract_fee_status", "contractFeeStatus",
+    "facilitator_contract_fee_review_status", "facilitatorContractFeeReviewStatus",
+    "signed_contract_fee_status", "signedContractFeeStatus",
+  ];
+  for (const key of candidateKeys) {
+    const val = profile[key] ?? quickView[key];
+    const text =
+      typeof val === "string" || typeof val === "number"
+        ? String(val).trim().toLowerCase()
+        : "";
+    if (text.includes("reject") || text === "2") return true;
+  }
+  return false;
+}
+
+function resolveFlow2ProformaRejection(quickView: Record<string, unknown>): boolean {
+  const profile = (quickView.profile as Record<string, unknown> | undefined) ?? {};
+  const candidateKeys = [
+    "proforma_status", "proformaStatus",
+    "proforma_invoice_status", "proformaInvoiceStatus",
+    "payment_status", "paymentStatus",
+  ];
+  for (const key of candidateKeys) {
+    const val = profile[key] ?? quickView[key];
+    const text =
+      typeof val === "string" || typeof val === "number"
+        ? String(val).trim().toLowerCase()
+        : "";
+    if (text.includes("reject") || text === "2") return true;
+  }
+  return false;
+}
+
+function resolveFlow2WorkOrderRejection(quickView: Record<string, unknown>, contractDocument: Record<string, unknown>): boolean {
+  const contractRoot =
+    (contractDocument.data as Record<string, unknown> | undefined) ?? contractDocument;
+  const woStatusLabelRaw = contractRoot.wo_status_label ?? contractDocument.wo_status_label;
+  const woStatusLabel =
+    typeof woStatusLabelRaw === "string" || typeof woStatusLabelRaw === "number"
+      ? String(woStatusLabelRaw).toLowerCase()
+      : "";
+  if (woStatusLabel.includes("rejected")) return true;
+  const profile = (quickView.profile as Record<string, unknown> | undefined) ?? {};
+  const workOrderStatusRaw =
+    profile.work_order_status ?? profile.workOrderStatus ??
+    quickView.work_order_status ?? quickView.workOrderStatus;
+  const workOrderStatus =
+    typeof workOrderStatusRaw === "string" || typeof workOrderStatusRaw === "number"
+      ? String(workOrderStatusRaw).trim().toLowerCase()
+      : "";
+  return workOrderStatus.includes("reject") || workOrderStatus === "2";
+}
+
+function resolveFlow2FacilitatorSteps(
+  quickView: Record<string, unknown>,
+  contractDocument: Record<string, unknown>,
+  financeInvoicesData: Record<string, unknown> | null,
+  coordinatorAssigned: boolean,
+  projectCodeAssignment: Record<string, unknown> | null,
+  primaryDataForm: Record<string, unknown> | null,
+  checklistDocumentsData: Record<string, unknown> | null,
+  facilitatorAssessorAssignmentDone: boolean,
+  facilitatorPreliminaryScoringDone: boolean,
+  facilitatorFinalScoringSubmitted: boolean,
+  facilitatorCertificateUploaded: boolean,
+  facilitatorNotifications: PanelNotification[],
+  projectId: string,
+): { latest: FlowStepRow; next: FlowStepRow } | null {
+  const activityId = resolveFacilitatorStageActivityId(quickView);
+  if (activityId === null) return null;
+
+  if (activityId === 1) {
+    return {
+      latest: { activity: "Company Registered", status: "Completed", responsibility: "Company" },
+      next: { activity: "Fill Registration Info", status: "Pending", responsibility: "Company" },
+    };
+  }
+  if (activityId === 2) {
+    return {
+      latest: { activity: "Company Filled Registration Info", status: "Completed", responsibility: "Company" },
+      next: { activity: "CII will Upload Proposal Document", status: "Pending", responsibility: "CII" },
+    };
+  }
+  if (activityId === 3) {
+    return {
+      latest: { activity: "CII Uploaded Proposal Document", status: "Completed", responsibility: "CII" },
+      next: { activity: "Company will upload Work Order", status: "Pending", responsibility: "Company" },
+    };
+  }
+  if (activityId === 4) {
+    return {
+      latest: { activity: "Company Uploaded Work Order Document", status: "Completed", responsibility: "Company" },
+      next: { activity: "CII will Approve/Reject Work Order", status: "Pending", responsibility: "CII" },
+    };
+  }
+  if (activityId === 5) {
+    if (resolveFlow2WorkOrderRejection(quickView, contractDocument)) {
+      return {
+        latest: { activity: "Work Order / Contract Document Rejected", status: "Rejected", responsibility: "CII" },
+        next: { activity: "Work Order Document needs to be re-uploaded", status: "Pending", responsibility: "Company" },
+      };
+    }
+    return {
+      latest: { activity: "Work Order / Contract Document Accepted", status: "Approved", responsibility: "CII" },
+      next: { activity: "Upload Project Code", status: "Pending", responsibility: "CII" },
+    };
+  }
+  if (activityId === 6) {
+    return {
+      latest: { activity: "CII provided Project Code", status: "Completed", responsibility: "CII" },
+      next: { activity: "Assign Project Co-Ordinator", status: "Pending", responsibility: "CII" },
+    };
+  }
+  if (activityId === 61) {
+    return {
+      latest: { activity: "Assign Project Co-Ordinator", status: "Completed", responsibility: "CII" },
+      next: { activity: "CII to upload the PI/Tax Invoice", status: "Pending", responsibility: "CII" },
+    };
+  }
+  if (activityId === 62) {
+    return {
+      latest: { activity: "CII uploaded the PI/Tax Invoice", status: "Completed", responsibility: "CII" },
+      next: { activity: "Consultant will upload Site Visit Report", status: "Pending", responsibility: "Consultant" },
+    };
+  }
+  if (activityId === 63) {
+    return {
+      latest: { activity: "Consultant Uploaded Site Visit Report", status: "Completed", responsibility: "Consultant" },
+      next: { activity: "CII will assign a Facilitator", status: "Pending", responsibility: "CII" },
+    };
+  }
+  if (activityId === 64) {
+    return {
+      latest: { activity: "CII Assigned A Facilitator", status: "Completed", responsibility: "CII" },
+      next: { activity: "Facilitator will Upload Signed Contract Fee Document", status: "Pending", responsibility: "Facilitator" },
+    };
+  }
+  if (activityId === 65) {
+    return {
+      latest: { activity: "Facilitator Uploaded Signed Contract Fee Document", status: "Completed", responsibility: "Facilitator" },
+      next: { activity: "CII will Acknowledge Signed Contract Fee Document", status: "Pending", responsibility: "CII" },
+    };
+  }
+  if (activityId === 66) {
+    if (resolveFlow2ContractFeeRejection(quickView)) {
+      return {
+        latest: { activity: "CII Disapproved Contract Fee Document", status: "Rejected", responsibility: "CII" },
+        next: { activity: "Facilitator will re-upload Signed Contract Fee Document", status: "Pending", responsibility: "Facilitator" },
+      };
+    }
+    return {
+      latest: { activity: "CII Accepted Fee Contract Document of the Facilitator", status: "Approved", responsibility: "CII" },
+      next: { activity: "Consultant/Company will make payment", status: "Pending", responsibility: "Consultant/Company" },
+    };
+  }
+  if (activityId === 7) {
+    return {
+      latest: { activity: "Consultant/Company Paid 1st Proforma Invoice", status: "Completed", responsibility: "Consultant/Company" },
+      next: { activity: "CII will Acknowledge Proforma Invoice", status: "Pending", responsibility: "CII" },
+    };
+  }
+  if (activityId === 8) {
+    if (resolveFlow2ProformaRejection(quickView)) {
+      return {
+        latest: { activity: "1st Proforma Invoice Rejected by CII", status: "Rejected", responsibility: "CII" },
+        next: { activity: "Consultant/Company will re-pay 1st Proforma Invoice", status: "Pending", responsibility: "Consultant/Company" },
+      };
+    }
+    return {
+      latest: { activity: "CII Acknowledged Proforma Invoice", status: "Approved", responsibility: "CII" },
+      next: { activity: "Company needs to upload Primary Data Form", status: "Pending", responsibility: "Company" },
+    };
+  }
+  if (activityId === 9) {
+    return {
+      latest: { activity: "Company Uploaded All Primary Data", status: "Completed", responsibility: "Company" },
+      next: { activity: "CII needs to Accept Primary Data", status: "Pending", responsibility: "CII" },
+    };
+  }
+
+  if (activityId >= 10 && activityId <= 21) {
+    return null;
+  }
+
+  return null;
+}
+
 function resolveFlowSteps(
   quickView: Record<string, unknown>,
   latestStep: unknown,
@@ -2379,6 +2593,27 @@ function resolveFlowSteps(
     const contractFlow = contractPhaseToFlowSteps(quickView, contractDocument);
     if (contractFlow) {
       return contractFlow;
+    }
+
+    if (isCiiAssignsFacilitatorFlow(quickView)) {
+      const flow2Steps = resolveFlow2FacilitatorSteps(
+        quickView,
+        contractDocument,
+        financeInvoicesData,
+        coordinatorAssigned,
+        projectCodeAssignment,
+        primaryDataForm,
+        checklistDocumentsData,
+        facilitatorAssessorAssignmentDone,
+        facilitatorPreliminaryScoringDone,
+        facilitatorFinalScoringSubmitted,
+        facilitatorCertificateUploaded,
+        facilitatorNotifications,
+        projectId,
+      );
+      if (flow2Steps) {
+        return flow2Steps;
+      }
     }
 
     if (hasAnyRejectedPrimaryDataSection(primaryDataForm, quickView, facilitatorNotifications, projectId)) {
@@ -3700,6 +3935,7 @@ export default function AssessorProjectQuickViewPage() {
     hasDisplayValue(coordinatorResolved.email) ||
     hasDisplayValue(coordinatorResolved.mobile ?? coordinatorResolved.phone);
   const showFacilitatorSection = assessors.length > 0;
+  const isFlow2 = isFacilitatorProject && isCiiAssignsFacilitatorFlow(quickView);
   const facilitatorFlowSteps: Array<{ label: string; aliases: string[]; responsibility: string }> = [
     { label: "Company Registered by Company", aliases: ["company registered by company", "company registered"], responsibility: "Company" },
     { label: "Company Filled Registration Info", aliases: ["company filled registration info", "registration filled"], responsibility: "Company" },
@@ -3915,6 +4151,36 @@ export default function AssessorProjectQuickViewPage() {
     { label: "Company needs to upload primary data form", aliases: ["company needs to upload primary data form", "primary data form"], responsibility: "Company" },
     { label: "CII accept or reject primary data form", aliases: ["cii accept or reject primary data form", "primary data accepted", "primary data rejected"], responsibility: "CII" },
   ];
+  const flow2FlowSteps: Array<{ label: string; aliases: string[]; responsibility: string }> = [
+    { label: "Company Registered", aliases: ["company registered by company", "company registered"], responsibility: "Company" },
+    { label: "Company Filled Registration Info", aliases: ["company filled registration info", "registration filled", "fill registration info"], responsibility: "Company" },
+    { label: "CII Uploaded Proposal Document", aliases: ["cii uploaded proposal document", "cii will upload proposal document", "proposal document"], responsibility: "CII" },
+    { label: "Company Uploaded Work Order Document", aliases: ["company uploaded work order", "company will upload work order", "work order document", "work order uploaded"], responsibility: "Company" },
+    { label: "Work Order / Contract Document Accepted", aliases: ["work order accepted", "work order contract document accepted", "cii will approve reject work order", "cii approved work order"], responsibility: "CII" },
+    { label: "CII provided Project Code", aliases: ["cii provided project code", "upload project code", "project code"], responsibility: "CII" },
+    { label: "Assign Project Co-Ordinator", aliases: ["assign project coordinator", "project coordinator assigned", "assign project co-ordinator"], responsibility: "CII" },
+    { label: "CII uploaded the PI/Tax Invoice", aliases: ["cii uploaded pi tax invoice", "cii to upload the pi tax invoice", "pi tax invoice uploaded", "pi tax invoice"], responsibility: "CII" },
+    { label: "Consultant Uploaded Site Visit Report", aliases: ["consultant uploaded site visit report", "consultant will upload site visit report", "site visit report"], responsibility: "Consultant" },
+    { label: "CII Assigned A Facilitator", aliases: ["cii assigned a facilitator", "cii will assign a facilitator", "facilitator assigned", "assign facilitator"], responsibility: "CII" },
+    { label: "Facilitator Uploaded Signed Contract Fee Document", aliases: ["facilitator uploaded signed contract fee document", "facilitator will upload signed contract fee document", "signed contract fee document", "contract fee document"], responsibility: "Facilitator" },
+    { label: "CII Accepted Fee Contract Document", aliases: ["cii accepted fee contract document", "cii will acknowledge signed contract fee document", "cii acknowledge contract fee", "fee contract document accepted", "cii disapproved contract fee document"], responsibility: "CII" },
+    { label: "Consultant/Company Paid 1st Proforma Invoice", aliases: ["consultant company paid 1st proforma invoice", "1st proforma invoice", "consultant company will make payment", "payment done"], responsibility: "Consultant/Company" },
+    { label: "CII Acknowledged Proforma Invoice", aliases: ["cii acknowledged proforma invoice", "cii will acknowledge proforma invoice", "proforma invoice acknowledged"], responsibility: "CII" },
+    { label: "Company Uploaded All Primary Data", aliases: ["company uploaded all primary data", "uploaded all primary data", "need to upload primary data form", "primary data form"], responsibility: "Company" },
+    { label: "CII Approved All Primary Data", aliases: ["cii approved all primary data", "cii need to accept primary data", "cii accepted primary data", "primary data accepted"], responsibility: "CII" },
+    { label: "All Assessment Submittals Uploaded", aliases: ["all assessment submittals uploaded", "all checklist documents uploaded", "all assessment submittals to be uploaded", "assessment submittals"], responsibility: "Company" },
+    { label: "CII Approved All Assessment Submittals", aliases: ["cii approved all assessment submittals", "cii will approve all checklist documents", "assessment submittals approved"], responsibility: "CII" },
+    { label: "CII Assigned an Assessor", aliases: ["cii assigned an assessor", "cii will assign assessor", "assessor assigned"], responsibility: "CII" },
+    { label: "Preliminary Scoring Submitted by CII", aliases: ["preliminary scoring submitted by cii", "preliminary scoring to be submitted by cii", "preliminary scoring"], responsibility: "CII" },
+    { label: "Final Scoring Submitted (Rating Declaration)", aliases: ["final scoring submitted", "final scoring is submitted", "final scoring is to be submitted", "rating declaration"], responsibility: "Assessor" },
+    { label: "CII Uploaded Certificate", aliases: ["cii uploaded certificate", "cii will upload certificate", "certificate uploaded"], responsibility: "CII" },
+    { label: "CII Uploaded 2nd Proforma Invoice", aliases: ["cii uploaded 2nd proforma invoice", "cii will raise 2nd proforma invoice", "2nd proforma invoice"], responsibility: "CII" },
+    { label: "2nd Proforma Invoice Payment by Consultant/Company", aliases: ["2nd proforma invoice payment", "consultant company will make payment", "2nd proforma payment"], responsibility: "Consultant/Company" },
+    { label: "CII Accepted 2nd Proforma Invoice", aliases: ["cii accepted 2nd proforma invoice", "cii will acknowledge 2nd proforma invoice", "2nd proforma invoice acknowledged"], responsibility: "CII" },
+    { label: "CII Dispatched Plaque & Certificate", aliases: ["cii dispatched plaque", "plaque and pr data", "plaque and pr has been done", "plaque dispatched"], responsibility: "CII" },
+    { label: "CII Uploaded Feedback Report", aliases: ["cii uploaded feedback report", "cii will upload feedback report", "feedback report", "feedback done by cii"], responsibility: "CII" },
+  ];
+  const activeFlowSteps = isFlow2 ? flow2FlowSteps : facilitatorFlowSteps;
   const normalizedLatest = normalizeStepText(flowSteps.latest.activity);
   const normalizedNext = normalizeStepText(flowSteps.next.activity);
   const matchesStep = (step: { label: string; aliases: string[] }, normalizedInput: string): boolean => {
@@ -3926,12 +4192,12 @@ export default function AssessorProjectQuickViewPage() {
       normalizedInput.split(" ").filter(Boolean).every((token) => candidate.includes(token))
     );
   };
-  const latestIndex = facilitatorFlowSteps.findIndex((step) => matchesStep(step, normalizedLatest));
-  const nextIndex = facilitatorFlowSteps.findIndex((step) => matchesStep(step, normalizedNext));
+  const latestIndex = activeFlowSteps.findIndex((step) => matchesStep(step, normalizedLatest));
+  const nextIndex = activeFlowSteps.findIndex((step) => matchesStep(step, normalizedNext));
   const resolvedLatestIndex = latestIndex >= 0 ? latestIndex : Math.max(0, nextIndex - 1);
-  const resolvedNextIndex = nextIndex >= 0 ? nextIndex : Math.min(resolvedLatestIndex + 1, facilitatorFlowSteps.length - 1);
+  const resolvedNextIndex = nextIndex >= 0 ? nextIndex : Math.min(resolvedLatestIndex + 1, activeFlowSteps.length - 1);
   const facilitatorActivityLog = isFacilitatorProject
-    ? facilitatorFlowSteps.map((step, idx) => {
+    ? activeFlowSteps.map((step, idx) => {
         if (idx < resolvedNextIndex) {
           return { title: step.label, subtitle: `Completed • ${step.responsibility}`, state: "done" as const };
         }
@@ -3942,7 +4208,7 @@ export default function AssessorProjectQuickViewPage() {
       })
     : [];
   const facilitatorMilestones = isFacilitatorProject
-    ? facilitatorFlowSteps.map((step, idx) => ({ label: step.label, done: idx <= resolvedLatestIndex }))
+    ? activeFlowSteps.map((step, idx) => ({ label: step.label, done: idx <= resolvedLatestIndex }))
     : [];
 
   return (
