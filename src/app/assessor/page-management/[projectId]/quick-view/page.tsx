@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { AuthApiError } from "@/lib/auth-api";
 import { refreshAssessorNotifications } from "@/lib/assessor-notifications-api";
@@ -74,6 +74,250 @@ function formatDateDDMMYYYY(value: unknown): string {
 function toPlainString(value: unknown): string {
   return typeof value === "string" || typeof value === "number" ? String(value) : "";
 }
+
+/* ─── Flow 2: CII assigns facilitator — step resolution engine ─── */
+
+type FlowStepPair = {
+  latest: { activity: string; status: string; responsibility: string };
+  next: { activity: string; status: string; responsibility: string };
+};
+
+function resolveActivityId(quickView: Record<string, unknown>): number | null {
+  const profile = (quickView.profile as Record<string, unknown> | undefined) ?? {};
+  const milestoneFlow = (quickView.milestone_flow as Record<string, unknown> | undefined) ?? {};
+  const candidates: unknown[] = [
+    profile.current_activity_id,
+    profile.currentActivityId,
+    profile.next_activities_id,
+    profile.nextActivitiesId,
+    quickView.current_activity_id,
+    quickView.currentActivityId,
+    milestoneFlow.current_flow,
+    milestoneFlow.current_activity_id,
+  ];
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
+function isCiiAssignsFacilitatorFlow(quickView: Record<string, unknown>): boolean {
+  const profile = (quickView.profile as Record<string, unknown> | undefined) ?? {};
+  const project = (quickView.project as Record<string, unknown> | undefined) ?? {};
+  const company = (quickView.company as Record<string, unknown> | undefined) ?? {};
+  const mf = (quickView.milestone_flow as Record<string, unknown> | undefined) ?? {};
+  const flowCandidates: unknown[] = [
+    profile.flow_type, profile.flowType, profile.flow_id, profile.flowId,
+    project.flow_type, project.flowType, project.flow_id, project.flowId,
+    company.flow_type, company.flowType, company.flow_id, company.flowId,
+    quickView.flow_type, quickView.flowType, quickView.flow_id, quickView.flowId,
+    mf.flow_type, mf.flowType,
+  ];
+  for (const c of flowCandidates) {
+    const t = typeof c === "string" || typeof c === "number" ? String(c).trim() : "";
+    if (t === "2") return true;
+  }
+  const aid = resolveActivityId(quickView);
+  if (aid !== null && aid >= 62 && aid <= 66) return true;
+  return false;
+}
+
+function hasRejectionSignal(quickView: Record<string, unknown>, keys: string[]): boolean {
+  const profile = (quickView.profile as Record<string, unknown> | undefined) ?? {};
+  for (const key of keys) {
+    const raw = profile[key] ?? quickView[key];
+    const t = typeof raw === "string" || typeof raw === "number" ? String(raw).trim().toLowerCase() : "";
+    if (t.includes("reject") || t === "2") return true;
+  }
+  return false;
+}
+
+function resolveFlow2Steps(quickView: Record<string, unknown>): FlowStepPair | null {
+  const aid = resolveActivityId(quickView);
+  if (aid === null) return null;
+
+  switch (aid) {
+    case 1: return {
+      latest: { activity: "Company Registered", status: "Completed", responsibility: "Company" },
+      next: { activity: "Fill Registration Info", status: "Pending", responsibility: "Company" },
+    };
+    case 2: return {
+      latest: { activity: "Company Filled Registration Info", status: "Completed", responsibility: "Company" },
+      next: { activity: "CII will Upload Proposal Document", status: "Pending", responsibility: "CII" },
+    };
+    case 3: return {
+      latest: { activity: "CII Uploaded Proposal Document", status: "Completed", responsibility: "CII" },
+      next: { activity: "Company Will Upload Work Order", status: "Pending", responsibility: "Company" },
+    };
+    case 4: return {
+      latest: { activity: "Company Uploaded Work Order Document", status: "Completed", responsibility: "Company" },
+      next: { activity: "CII will Approve/Reject Work Order", status: "Pending", responsibility: "CII" },
+    };
+    case 5: {
+      if (hasRejectionSignal(quickView, ["work_order_status", "workOrderStatus", "wo_status_label", "woStatusLabel"])) {
+        return {
+          latest: { activity: "Work Order / Contract Document Rejected", status: "Rejected", responsibility: "CII" },
+          next: { activity: "Work Order Document needs to be re-uploaded", status: "Pending", responsibility: "Company" },
+        };
+      }
+      return {
+        latest: { activity: "Work Order / Contract Document Accepted", status: "Approved", responsibility: "CII" },
+        next: { activity: "Upload Project Code", status: "Pending", responsibility: "CII" },
+      };
+    }
+    case 6: return {
+      latest: { activity: "CII to provide Project Code", status: "Completed", responsibility: "CII" },
+      next: { activity: "Assign Project Co-Ordinator", status: "Pending", responsibility: "CII" },
+    };
+    case 61: return {
+      latest: { activity: "Assign Project Co-Ordinator", status: "Completed", responsibility: "CII" },
+      next: { activity: "CII to upload the PI/Tax Invoice", status: "Pending", responsibility: "CII" },
+    };
+    case 62: return {
+      latest: { activity: "CII uploaded the PI/Tax Invoice", status: "Completed", responsibility: "CII" },
+      next: { activity: "Consultant Will Upload Site Visit Report", status: "Pending", responsibility: "Consultant" },
+    };
+    case 63: return {
+      latest: { activity: "Consultant Uploaded Site Visit Report", status: "Completed", responsibility: "Consultant" },
+      next: { activity: "CII will Assign A Facilitator", status: "Pending", responsibility: "CII" },
+    };
+    case 64: return {
+      latest: { activity: "CII Assigned A Facilitator", status: "Completed", responsibility: "CII" },
+      next: { activity: "Facilitator will Upload Signed Contract Fee Document", status: "Pending", responsibility: "Facilitator" },
+    };
+    case 65: return {
+      latest: { activity: "Facilitator Uploaded Signed Contract Fee Document", status: "Completed", responsibility: "Consultant" },
+      next: { activity: "CII will Acknowledge Signed Contract Fee Document", status: "Pending", responsibility: "CII" },
+    };
+    case 66: {
+      if (hasRejectionSignal(quickView, ["contract_fee_status", "contractFeeStatus", "facilitator_contract_fee_status", "signed_contract_fee_status"])) {
+        return {
+          latest: { activity: "CII Disapproved Contract Fee Document", status: "Rejected", responsibility: "CII" },
+          next: { activity: "Facilitator will re-upload Signed Contract Fee Document", status: "Pending", responsibility: "Facilitator" },
+        };
+      }
+      return {
+        latest: { activity: "CII Accepted Fee Contract Document of the Facilitator", status: "Approved", responsibility: "CII" },
+        next: { activity: "Consultant/Company Will Make Payment", status: "Pending", responsibility: "Consultant/Company" },
+      };
+    }
+    case 7: return {
+      latest: { activity: "Consultant/Company Paid 1st Proforma Invoice", status: "Completed", responsibility: "Consultant/Company" },
+      next: { activity: "CII will Acknowledge Proforma Invoice", status: "Pending", responsibility: "CII" },
+    };
+    case 8: {
+      if (hasRejectionSignal(quickView, ["proforma_status", "proformaStatus", "payment_status", "paymentStatus", "proforma_invoice_status"])) {
+        return {
+          latest: { activity: "1st Proforma Invoice Rejected by CII", status: "Rejected", responsibility: "CII" },
+          next: { activity: "Consultant/Company will Re-pay 1st Proforma Invoice", status: "Pending", responsibility: "Consultant/Company" },
+        };
+      }
+      return {
+        latest: { activity: "CII Acknowledged Proforma Invoice", status: "Approved", responsibility: "CII" },
+        next: { activity: "Need to Upload Primary Data Form", status: "Pending", responsibility: "Company" },
+      };
+    }
+    case 9: return {
+      latest: { activity: "Company Uploaded All Primary Data", status: "Completed", responsibility: "Company" },
+      next: { activity: "CII Need to Accept Primary Data", status: "Pending", responsibility: "CII" },
+    };
+    case 10: return {
+      latest: { activity: "CII Approved All Primary Data", status: "Completed", responsibility: "CII" },
+      next: { activity: "All Assessment Submittals to be uploaded", status: "Pending", responsibility: "Company" },
+    };
+    case 11: return {
+      latest: { activity: "All Checklist Documents Uploaded by Company", status: "Completed", responsibility: "Company" },
+      next: { activity: "CII will Approve All Checklist Documents", status: "Pending", responsibility: "CII" },
+    };
+    case 12: return {
+      latest: { activity: "CII Approved All Assessment Submittals", status: "Completed", responsibility: "CII" },
+      next: { activity: "CII Will Assign Assessor", status: "Pending", responsibility: "CII" },
+    };
+    case 13: return {
+      latest: { activity: "CII Assigned an Assessor", status: "Completed", responsibility: "CII" },
+      next: { activity: "Preliminary Scoring to be submitted by CII", status: "Pending", responsibility: "CII" },
+    };
+    case 14: return {
+      latest: { activity: "Preliminary Scoring submitted by CII", status: "Completed", responsibility: "CII" },
+      next: { activity: "Final Scoring is to be submitted (Rating Declaration)", status: "Pending", responsibility: "Assessor" },
+    };
+    case 15: return {
+      latest: { activity: "Final Scoring is submitted (Rating Declaration)", status: "Completed", responsibility: "Assessor" },
+      next: { activity: "CII Will Upload Certificate", status: "Pending", responsibility: "CII" },
+    };
+    case 16: return {
+      latest: { activity: "CII Uploaded Certificate", status: "Completed", responsibility: "CII" },
+      next: { activity: "CII Will Raise 2nd Proforma Invoice", status: "Pending", responsibility: "CII" },
+    };
+    case 17: return {
+      latest: { activity: "CII Uploaded 2nd Proforma Invoice", status: "Completed", responsibility: "CII" },
+      next: { activity: "Consultant/Company Will Make Payment", status: "Pending", responsibility: "Consultant/Company" },
+    };
+    case 18: return {
+      latest: { activity: "2nd Proforma Invoice Payment Receipt by Consultant/Company", status: "Completed", responsibility: "Consultant/Company" },
+      next: { activity: "CII will Acknowledge 2nd Proforma Invoice", status: "Pending", responsibility: "CII" },
+    };
+    case 19: {
+      if (hasRejectionSignal(quickView, ["proforma_2nd_status", "proforma2ndStatus", "second_proforma_status", "payment_2nd_status"])) {
+        return {
+          latest: { activity: "2nd Proforma Invoice Rejected By CII", status: "Rejected", responsibility: "CII" },
+          next: { activity: "Consultant/Company will Re-pay 2nd Proforma Invoice", status: "Pending", responsibility: "Consultant/Company" },
+        };
+      }
+      return {
+        latest: { activity: "CII Accepted 2nd Proforma Invoice Acknowledgement", status: "Approved", responsibility: "CII" },
+        next: { activity: "Plaque and PR Data should be Uploaded", status: "Pending", responsibility: "CII" },
+      };
+    }
+    case 20: return {
+      latest: { activity: "CII dispatched Plaque & Certificate", status: "Completed", responsibility: "CII" },
+      next: { activity: "CII Will Upload Feedback Report", status: "Pending", responsibility: "CII" },
+    };
+    case 21: return {
+      latest: { activity: "CII Uploaded Feedback Report", status: "Completed", responsibility: "CII" },
+      next: { activity: "Process Complete", status: "Completed", responsibility: "CII" },
+    };
+    default: return null;
+  }
+}
+
+const FLOW2_STEPS: Array<{ label: string; responsibility: string }> = [
+  { label: "Company Registered", responsibility: "Company" },
+  { label: "Company Filled Registration Info", responsibility: "Company" },
+  { label: "CII Uploaded Proposal Document", responsibility: "CII" },
+  { label: "Company Uploaded Work Order Document", responsibility: "Company" },
+  { label: "Work Order / Contract Document Accepted", responsibility: "CII" },
+  { label: "CII to provide Project Code", responsibility: "CII" },
+  { label: "Assign Project Co-Ordinator", responsibility: "CII" },
+  { label: "CII uploaded the PI/Tax Invoice", responsibility: "CII" },
+  { label: "Consultant Uploaded Site Visit Report", responsibility: "Consultant" },
+  { label: "CII Assigned A Facilitator", responsibility: "CII" },
+  { label: "Facilitator Uploaded Signed Contract Fee Document", responsibility: "Facilitator" },
+  { label: "CII Accepted Fee Contract Document", responsibility: "CII" },
+  { label: "Consultant/Company Paid 1st Proforma Invoice", responsibility: "Consultant/Company" },
+  { label: "CII Acknowledged Proforma Invoice", responsibility: "CII" },
+  { label: "Company Uploaded All Primary Data", responsibility: "Company" },
+  { label: "CII Approved All Primary Data", responsibility: "CII" },
+  { label: "All Checklist Documents Uploaded by Company", responsibility: "Company" },
+  { label: "CII Approved All Assessment Submittals", responsibility: "CII" },
+  { label: "CII Assigned an Assessor", responsibility: "CII" },
+  { label: "Preliminary Scoring submitted by CII", responsibility: "CII" },
+  { label: "Final Scoring submitted (Rating Declaration)", responsibility: "Assessor" },
+  { label: "CII Uploaded Certificate", responsibility: "CII" },
+  { label: "CII Uploaded 2nd Proforma Invoice", responsibility: "CII" },
+  { label: "2nd Proforma Invoice Payment by Consultant/Company", responsibility: "Consultant/Company" },
+  { label: "CII Accepted 2nd Proforma Invoice", responsibility: "CII" },
+  { label: "CII dispatched Plaque & Certificate", responsibility: "CII" },
+  { label: "CII Uploaded Feedback Report", responsibility: "CII" },
+];
+
+const FLOW2_AID_TO_INDEX: Record<number, number> = {
+  1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 61: 6, 62: 7, 63: 8, 64: 9, 65: 10, 66: 11,
+  7: 12, 8: 13, 9: 14, 10: 15, 11: 16, 12: 17, 13: 18, 14: 19, 15: 20, 16: 21, 17: 22, 18: 23, 19: 24, 20: 25, 21: 26,
+};
+
+/* ─── End Flow 2 Engine ─── */
 
 /** Facilitator (process_type &quot;f&quot;) — matches registration / quick view fields. */
 function detectFacilitatorProcessType(quickView: Record<string, unknown>): boolean {
@@ -217,6 +461,11 @@ export default function AssessorProjectQuickViewPage() {
     };
   }, [projectId]);
 
+  const isFacFlow2 = detectFacilitatorProcessType(quickView) && isCiiAssignsFacilitatorFlow(quickView);
+  const flow2StepsMemo = useMemo(() => (isFacFlow2 ? resolveFlow2Steps(quickView) : null), [isFacFlow2, quickView]);
+  const flow2AidMemo = useMemo(() => resolveActivityId(quickView), [quickView]);
+  const flow2IdxMemo = flow2AidMemo !== null ? (FLOW2_AID_TO_INDEX[flow2AidMemo] ?? -1) : -1;
+
   if (loading) return <p className="text-sm text-[#667083]">Loading…</p>;
   if (error) return <p className="text-sm text-[#a94442]">{error}</p>;
 
@@ -290,6 +539,7 @@ export default function AssessorProjectQuickViewPage() {
     "assigned_facilitator",
   ]);
   const isFacilitatorProcess = detectFacilitatorProcessType(quickView);
+  const isFlow2 = isFacFlow2;
   const registrationFacilitator = mergeSelectedFacilitatorFromRegistration(
     registrationData,
     facilitatorRegistrationInfo,
@@ -307,6 +557,9 @@ export default function AssessorProjectQuickViewPage() {
     "visit_details",
   ]);
   const assessors = quickviewAssessors.length > 0 ? quickviewAssessors : assignmentAssessors;
+
+  const flow2Steps = flow2StepsMemo;
+  const flow2CurrentIndex = flow2IdxMemo;
 
   return (
     <div className="space-y-2">
@@ -359,6 +612,59 @@ export default function AssessorProjectQuickViewPage() {
         </SectionCard>
       </div>
 
+      {/* ─── Flow 2: Latest Step / Next Step ─── */}
+      {flow2Steps ? (
+        <div className="grid gap-3 xl:grid-cols-2">
+          <SectionCard title="Latest Step Completed">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[320px] border-collapse text-sm">
+                <thead>
+                  <tr className="text-left text-[11px] font-semibold uppercase tracking-wide text-[#6b7280]">
+                    <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Activity</th>
+                    <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Status</th>
+                    <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Responsibility</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td className="border border-[#d9dde7] px-3 py-3 font-medium text-[#4b5563]">{flow2Steps.latest.activity}</td>
+                    <td className="border border-[#d9dde7] px-3 py-3 text-[#4b5563]">{flow2Steps.latest.status}</td>
+                    <td className="border border-[#d9dde7] px-3 py-3 text-[#4b5563]">{flow2Steps.latest.responsibility}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </SectionCard>
+
+          <SectionCard title={flow2Steps.next.activity === "Process Complete" ? "Certificate Issued" : "Next Step"}>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[320px] border-collapse text-sm">
+                <thead>
+                  <tr className="text-left text-[11px] font-semibold uppercase tracking-wide text-[#6b7280]">
+                    <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Activity</th>
+                    <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Status</th>
+                    <th className="border border-[#d9dde7] bg-[#f3f4f8] px-3 py-2">Responsibility</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td className={`font-medium ${flow2Steps.next.activity === "Process Complete" ? "border border-[#86efac] bg-[#dcfce7] px-3 py-3 text-[#166534]" : "border border-[#d9dde7] bg-[#fff700] px-3 py-3 text-[#4b5563]"}`}>
+                      {flow2Steps.next.activity}
+                    </td>
+                    <td className={flow2Steps.next.activity === "Process Complete" ? "border border-[#86efac] bg-[#dcfce7] px-3 py-3 text-[#166534]" : "border border-[#d9dde7] bg-[#fff700] px-3 py-3 text-[#4b5563]"}>
+                      {flow2Steps.next.status}
+                    </td>
+                    <td className={flow2Steps.next.activity === "Process Complete" ? "border border-[#86efac] bg-[#dcfce7] px-3 py-3 text-[#166534]" : "border border-[#d9dde7] bg-[#fff700] px-3 py-3 text-[#4b5563]"}>
+                      {flow2Steps.next.responsibility}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </SectionCard>
+        </div>
+      ) : null}
+
       <div className="grid gap-3 xl:grid-cols-2">
         <SectionCard title="Co-ordinator Details">
           <KVRow label="Name" value={coordinatorResolved.name ?? coordinatorResolved.coordinator_name} />
@@ -395,6 +701,60 @@ export default function AssessorProjectQuickViewPage() {
           )}
         </SectionCard>
       </div>
+
+      {/* ─── Flow 2: Activity Log & Milestone Flow ─── */}
+      {isFlow2 && flow2CurrentIndex >= 0 ? (
+        <div className="grid gap-3 xl:grid-cols-2">
+          <SectionCard title="Company Activity Log">
+            <div className="space-y-0">
+              {FLOW2_STEPS.map((step, idx) => {
+                const isDone = idx < flow2CurrentIndex;
+                const isCurrent = idx === flow2CurrentIndex;
+                let stateColor = "bg-[#cbd5e1]";
+                if (isDone) stateColor = "bg-[#22c55e]";
+                else if (isCurrent) stateColor = "bg-[#f59e0b]";
+
+                let subtitle = "Upcoming";
+                if (isDone) {
+                  subtitle = `Completed • ${step.responsibility}`;
+                } else if (isCurrent) {
+                  subtitle = `${flow2Steps?.next.status ?? "Pending"} • ${flow2Steps?.next.responsibility ?? step.responsibility}`;
+                }
+
+                return (
+                  <div key={`log-${step.label}`} className="relative flex items-start gap-3 pb-3 last:pb-0">
+                    {idx < FLOW2_STEPS.length - 1 ? (
+                      <span className="absolute left-[5px] top-4 bottom-0 w-px bg-[#cfd8e3]" />
+                    ) : null}
+                    <span className={`mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${stateColor}`} />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-[#2f3a46]">{step.label}</p>
+                      <p className="text-xs text-[#6b7280]">{subtitle}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </SectionCard>
+
+          <SectionCard title="Company Milestone Flow">
+            <div className="space-y-0">
+              {FLOW2_STEPS.map((step, idx) => {
+                const done = idx <= flow2CurrentIndex;
+                return (
+                  <div key={`ms-${step.label}`} className="relative flex items-start gap-3 pb-3 last:pb-0">
+                    {idx < FLOW2_STEPS.length - 1 ? (
+                      <span className="absolute left-[5px] top-4 bottom-0 w-px bg-[#cfd8e3]" />
+                    ) : null}
+                    <span className={`mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${done ? "bg-[#22c55e]" : "bg-[#cbd5e1]"}`} />
+                    <p className={`text-sm ${done ? "text-[#2f3a46]" : "text-[#64748b]"}`}>{step.label}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </SectionCard>
+        </div>
+      ) : null}
     </div>
   );
 }
