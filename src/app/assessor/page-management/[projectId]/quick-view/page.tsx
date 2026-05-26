@@ -10,6 +10,7 @@ import {
   parsePrimaryDataResubmissionFromNotifications,
   parsePrimaryDataLatestStateFromNotifications,
   parseChecklistLatestStateFromNotifications,
+  parse2ndProformaLatestStateFromNotifications,
   type PanelNotification,
 } from "@/lib/panel-notifications-api";
 import {
@@ -128,9 +129,8 @@ function resolveFirstSectorCriteriaId(criteriaPayload: Record<string, unknown>):
   return "";
 }
 
-function extractFacilitatorScoringBlock(payload: Record<string, unknown> | null): Record<string, unknown> | null {
-  if (!payload || typeof payload !== "object") return null;
-  const hasScoringSignals = (obj: Record<string, unknown>): boolean =>
+function hasScoringSignals(obj: Record<string, unknown>): boolean {
+  return (
     "total_pre_assessment_score" in obj ||
     "total_preliminary_score" in obj ||
     "total_final_score" in obj ||
@@ -139,7 +139,12 @@ function extractFacilitatorScoringBlock(payload: Record<string, unknown> | null)
     "criteria_projectscore" in obj ||
     "high_projectscore" in obj ||
     "max_score" in obj ||
-    "certification_level" in obj;
+    "certification_level" in obj
+  );
+}
+
+function extractFacilitatorScoringBlock(payload: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!payload || typeof payload !== "object") return null;
 
   const direct = payload.scoring;
   if (direct && typeof direct === "object" && !Array.isArray(direct)) {
@@ -158,6 +163,27 @@ function extractFacilitatorScoringBlock(payload: Record<string, unknown> | null)
   return null;
 }
 
+/**
+ * Extract all criteria scoring entries from `data.by_criteria` (admin scoring API format).
+ * Returns array of per-criteria objects with total_final_score, final_submitted, rows, etc.
+ */
+function extractByCriteriaScoringEntries(payload: Record<string, unknown> | null): Record<string, unknown>[] {
+  if (!payload || typeof payload !== "object") return [];
+  const sources = [payload, payload.data as Record<string, unknown> | undefined];
+  for (const source of sources) {
+    if (!source || typeof source !== "object") continue;
+    const byCriteria = (source as Record<string, unknown>).by_criteria ?? (source as Record<string, unknown>).byCriteria;
+    if (byCriteria && typeof byCriteria === "object" && !Array.isArray(byCriteria)) {
+      const entries = Object.values(byCriteria as Record<string, unknown>);
+      const records = entries.filter(
+        (v): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v),
+      );
+      if (records.length > 0) return records;
+    }
+  }
+  return [];
+}
+
 function hasNestedArrayEntries(value: unknown): boolean {
   if (!Array.isArray(value)) return false;
   return value.some((entry) =>
@@ -168,33 +194,45 @@ function hasNestedArrayEntries(value: unknown): boolean {
 /** True when CII preliminary / pre-assessment scores exist (aligned with scoring page fields). */
 function hasFacilitatorPreliminaryScoringDone(payload: Record<string, unknown> | null): boolean {
   const scoring = extractFacilitatorScoringBlock(payload);
-  if (!scoring) return false;
-  const totalRaw =
-    scoring.total_pre_assessment_score ??
-    scoring.total_preliminary_score ??
-    scoring.total_score ??
-    (scoring as Record<string, unknown>).total_pre_assessment ??
-    (scoring as Record<string, unknown>).totalPreAssessmentScore;
-  const totalNum = Number(totalRaw);
-  if (!Number.isNaN(totalNum) && totalNum !== 0) return true;
-  if (hasNestedArrayEntries(scoring.criteria_projectscore)) return true;
+  if (scoring) {
+    const totalRaw =
+      scoring.total_pre_assessment_score ??
+      scoring.total_preliminary_score ??
+      scoring.total_score ??
+      scoring.total_pre_assessment ??
+      scoring.totalPreAssessmentScore;
+    const totalNum = Number(totalRaw);
+    if (!Number.isNaN(totalNum) && totalNum !== 0) return true;
+    if (hasNestedArrayEntries(scoring.criteria_projectscore)) return true;
 
-  const rowsRaw = scoring.rows;
-  if (!Array.isArray(rowsRaw)) return false;
-  for (const row of rowsRaw) {
-    if (!row || typeof row !== "object") continue;
-    const r = row as Record<string, unknown>;
-    const candidates = [
-      r.preliminary_score,
-      r.pre_assessment_score,
-      r.pre_assesment_score,
-      r.coordinator_score,
-      r.coordinator_preliminary_score,
-      r.pre_score,
-    ];
-    for (const c of candidates) {
-      const n = Number(c);
-      if (!Number.isNaN(n) && n !== 0) return true;
+    const rowsRaw = scoring.rows;
+    if (Array.isArray(rowsRaw)) {
+      for (const row of rowsRaw) {
+        if (!row || typeof row !== "object") continue;
+        const r = row as Record<string, unknown>;
+        const candidates = [
+          r.preliminary_score, r.pre_assessment_score, r.pre_assesment_score,
+          r.coordinator_score, r.coordinator_preliminary_score, r.pre_score,
+        ];
+        for (const c of candidates) {
+          const n = Number(c);
+          if (!Number.isNaN(n) && n !== 0) return true;
+        }
+      }
+    }
+  }
+
+  const byCriteriaEntries = extractByCriteriaScoringEntries(payload);
+  for (const entry of byCriteriaEntries) {
+    const preTotal = Number(entry.total_pre_assessment_score ?? entry.total_preliminary_score);
+    if (!Number.isNaN(preTotal) && preTotal > 0) return true;
+    if (entry.final_submitted === true) return true;
+    const rows = Array.isArray(entry.rows) ? entry.rows : [];
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      const r = row as Record<string, unknown>;
+      const n = Number(r.preliminary_score ?? r.pre_assessment_score);
+      if (!Number.isNaN(n) && n > 0) return true;
     }
   }
   return false;
@@ -203,41 +241,52 @@ function hasFacilitatorPreliminaryScoringDone(payload: Record<string, unknown> |
 /** True when assessor final scoring exists in scoring payload (final_score / total_final_score > 0). */
 function hasFacilitatorFinalScoringSubmitted(payload: Record<string, unknown> | null): boolean {
   const scoring = extractFacilitatorScoringBlock(payload);
-  if (!scoring) return false;
-  const totalRaw =
-    scoring.total_final_score ??
-    scoring.total_score ??
-    (scoring as Record<string, unknown>).totalFinalScore;
-  const totalNum = Number(totalRaw);
-  if (!Number.isNaN(totalNum) && totalNum > 0) return true;
-  const profile =
-    (scoring.profile as Record<string, unknown> | undefined) ??
-    ((scoring.data as Record<string, unknown> | undefined)?.profile as Record<string, unknown> | undefined) ??
-    {};
-  const scoreBandRaw = profile.score_band_status ?? profile.scoreBandStatus;
-  const scoreBandNum = Number(scoreBandRaw);
-  if (!Number.isNaN(scoreBandNum) && scoreBandNum === 1) return true;
-  const certificationRaw = scoring.certification_level ?? scoring.certificationLevel;
-  if (typeof certificationRaw === "string" && certificationRaw.trim().length > 0) return true;
-  if (hasNestedArrayEntries(scoring.criteria_projectscore)) return true;
+  if (scoring) {
+    const totalRaw =
+      scoring.total_final_score ??
+      scoring.total_score ??
+      scoring.totalFinalScore;
+    const totalNum = Number(totalRaw);
+    if (!Number.isNaN(totalNum) && totalNum > 0) return true;
+    const profile =
+      (scoring.profile as Record<string, unknown> | undefined) ??
+      ((scoring.data as Record<string, unknown> | undefined)?.profile as Record<string, unknown> | undefined) ??
+      {};
+    const scoreBandRaw = profile.score_band_status ?? profile.scoreBandStatus;
+    const scoreBandNum = Number(scoreBandRaw);
+    if (!Number.isNaN(scoreBandNum) && scoreBandNum === 1) return true;
+    const certificationRaw = scoring.certification_level ?? scoring.certificationLevel;
+    if (typeof certificationRaw === "string" && certificationRaw.trim().length > 0) return true;
+    if (hasNestedArrayEntries(scoring.criteria_projectscore)) return true;
 
-  const rowsRaw = scoring.rows;
-  if (!Array.isArray(rowsRaw)) return false;
-  for (const row of rowsRaw) {
-    if (!row || typeof row !== "object") continue;
-    const r = row as Record<string, unknown>;
-    const candidates = [
-      r.final_score,
-      r.assessor_score,
-      r.assessment_score,
-      r.assesment_score,
-    ];
-    for (const c of candidates) {
-      const n = Number(c);
-      if (!Number.isNaN(n) && n > 0) return true;
+    const rowsRaw = scoring.rows;
+    if (Array.isArray(rowsRaw)) {
+      for (const row of rowsRaw) {
+        if (!row || typeof row !== "object") continue;
+        const r = row as Record<string, unknown>;
+        const candidates = [r.final_score, r.assessor_score, r.assessment_score, r.assesment_score];
+        for (const c of candidates) {
+          const n = Number(c);
+          if (!Number.isNaN(n) && n > 0) return true;
+        }
+      }
     }
   }
-  return false;
+
+  const byCriteriaEntries = extractByCriteriaScoringEntries(payload);
+  if (byCriteriaEntries.length === 0) return false;
+  return byCriteriaEntries.every((entry) => {
+    if (entry.assessor_final_submitted === true || entry.final_submitted === true) return true;
+    const totalFinal = Number(entry.total_final_score);
+    if (!Number.isNaN(totalFinal) && totalFinal > 0) return true;
+    const rows = Array.isArray(entry.rows) ? entry.rows : [];
+    return rows.length > 0 && rows.every((row) => {
+      if (!row || typeof row !== "object") return false;
+      const r = row as Record<string, unknown>;
+      const score = Number(r.final_score ?? r.assessor_score ?? r.assessment_score);
+      return !Number.isNaN(score) && score > 0;
+    });
+  });
 }
 
 function hasFacilitatorCertificateUploaded(payload: Record<string, unknown> | null): boolean {
@@ -1001,6 +1050,7 @@ function facilitatorPrimaryDataSubmittedFlowSteps(
   facilitatorCertificateUploaded: boolean,
   facilitatorNotifications: PanelNotification[],
   projectId: string,
+  financeInvoicesData: Record<string, unknown> | null = null,
 ): { latest: FlowStepRow; next: FlowStepRow } | null {
   if (status.allSectionsAccepted) {
     return resolveFacilitatorPrimaryDataFlowSteps(
@@ -1012,6 +1062,7 @@ function facilitatorPrimaryDataSubmittedFlowSteps(
       facilitatorCertificateUploaded,
       facilitatorNotifications,
       projectId,
+      financeInvoicesData,
     );
   }
 
@@ -1473,6 +1524,7 @@ function applyPrimaryDataQuickviewCompletionOverride(
   facilitatorPreliminaryScoringDone = false,
   facilitatorFinalScoringSubmitted = false,
   facilitatorCertificateUploaded = false,
+  financeInvoicesData: Record<string, unknown> | null = null,
 ): {
   latest: { activity: string; status: string; responsibility: string };
   next: { activity: string; status: string; responsibility: string };
@@ -1488,6 +1540,7 @@ function applyPrimaryDataQuickviewCompletionOverride(
       facilitatorCertificateUploaded,
       facilitatorNotifications,
       projectId,
+      financeInvoicesData,
     );
   }
   if (
@@ -1795,6 +1848,7 @@ function resolveFacilitatorPrimaryDataFlowSteps(
   facilitatorCertificateUploaded: boolean,
   facilitatorNotifications: PanelNotification[] = [],
   projectId = "",
+  financeInvoicesData: Record<string, unknown> | null = null,
 ): {
   latest: { activity: string; status: string; responsibility: string };
   next: { activity: string; status: string; responsibility: string };
@@ -1851,6 +1905,109 @@ function resolveFacilitatorPrimaryDataFlowSteps(
         facilitatorFinalScoringSubmitted
         ) {
           if (facilitatorCertificateUploaded) {
+            const proformaNotif = parse2ndProformaLatestStateFromNotifications(facilitatorNotifications, projectId);
+            const latestInvoiceAfterCert = getLatestFinanceInvoice(financeInvoicesData);
+            const has2ndProformaFromData = latestInvoiceAfterCert && hasInvoiceDocument(latestInvoiceAfterCert) && !isInvoicePaymentSubmitted(latestInvoiceAfterCert);
+            const remarksSuffix = proformaNotif.remarks ? ` — Remarks: ${proformaNotif.remarks}` : "";
+
+            if (proformaNotif.state === "feedback_uploaded") {
+              return {
+                latest: {
+                  activity: "Feedback document uploaded by CII",
+                  status: "Completed",
+                  responsibility: "CII",
+                },
+                next: {
+                  activity: "Certificate has been issued",
+                  status: "Completed",
+                  responsibility: "CII",
+                },
+              };
+            }
+            if (proformaNotif.state === "plaque_dispatched") {
+              return {
+                latest: {
+                  activity: "Plaque and certificate PR is done",
+                  status: "Completed",
+                  responsibility: "CII",
+                },
+                next: {
+                  activity: "Feedback document need to be uploaded by CII",
+                  status: "Pending",
+                  responsibility: "CII",
+                },
+              };
+            }
+            if (proformaNotif.state === "supporting_docs_approved") {
+              return {
+                latest: {
+                  activity: "Supporting documents approved by CII",
+                  status: "Approved",
+                  responsibility: "CII",
+                },
+                next: {
+                  activity: "Plaque and PQ need to be raised by CII",
+                  status: "Pending",
+                  responsibility: "CII",
+                },
+              };
+            }
+            if (proformaNotif.state === "supporting_docs_reuploaded") {
+              return {
+                latest: {
+                  activity: "Facilitator re-uploaded supporting documents",
+                  status: "Completed",
+                  responsibility: "Facilitator",
+                },
+                next: {
+                  activity: "CII needs to review re-uploaded supporting documents",
+                  status: "Pending",
+                  responsibility: "CII",
+                },
+              };
+            }
+            if (proformaNotif.state === "supporting_docs_rejected") {
+              return {
+                latest: {
+                  activity: `Supporting documents rejected by CII${remarksSuffix}`,
+                  status: "Rejected",
+                  responsibility: "CII",
+                },
+                next: {
+                  activity: "Facilitator needs to re-upload supporting documents",
+                  status: "Pending",
+                  responsibility: "Facilitator",
+                },
+              };
+            }
+            if (proformaNotif.state === "supporting_docs_awaiting_review" || proformaNotif.state === "supporting_docs_uploaded") {
+              return {
+                latest: {
+                  activity: "Supporting documents uploaded by Facilitator",
+                  status: "Completed",
+                  responsibility: "Facilitator",
+                },
+                next: {
+                  activity: "CII needs to review supporting documents",
+                  status: "Pending",
+                  responsibility: "CII",
+                },
+              };
+            }
+            if (has2ndProformaFromData || proformaNotif.state === "2nd_proforma_uploaded") {
+              return {
+                latest: {
+                  activity: "2nd proforma invoice is done",
+                  status: "Completed",
+                  responsibility: "CII",
+                },
+                next: {
+                  activity: "Supporting documents need to be uploaded by Facilitator",
+                  status: "Pending",
+                  responsibility: "Facilitator",
+                },
+              };
+            }
             return {
               latest: {
                 activity: "Upload certificate is done",
@@ -2004,6 +2161,7 @@ function tryFacilitatorPrimaryDataLaneSteps(
   facilitatorCertificateUploaded: boolean,
   facilitatorNotifications: PanelNotification[] = [],
   projectId = "",
+  financeInvoicesData: Record<string, unknown> | null = null,
 ): {
   latest: { activity: string; status: string; responsibility: string };
   next: { activity: string; status: string; responsibility: string };
@@ -2020,6 +2178,7 @@ function tryFacilitatorPrimaryDataLaneSteps(
     facilitatorCertificateUploaded,
     facilitatorNotifications,
     projectId,
+    financeInvoicesData,
   );
   if (isFacilitatorLateStageStepText(steps.next.activity)) {
     return null;
@@ -2242,6 +2401,7 @@ function resolveFlowSteps(
       facilitatorCertificateUploaded,
       facilitatorNotifications,
       projectId,
+      financeInvoicesData,
     );
     if (facilitatorPrimaryLane) {
       return facilitatorPrimaryLane;
@@ -2455,6 +2615,7 @@ function resolveFlowSteps(
                     facilitatorCertificateUploaded,
                     facilitatorNotifications,
                     projectId,
+                    financeInvoicesData,
                   );
                   if (facilitatorMidFlow) {
                     return facilitatorMidFlow;
@@ -2471,6 +2632,7 @@ function resolveFlowSteps(
                     facilitatorCertificateUploaded,
                     facilitatorNotifications,
                     projectId,
+                    financeInvoicesData,
                   );
                   if (primaryAfterFinance) {
                     return primaryAfterFinance;
@@ -2559,6 +2721,7 @@ function resolveFlowSteps(
                       facilitatorCertificateUploaded,
                       facilitatorNotifications,
                       projectId,
+                      financeInvoicesData,
                     );
                   }
                   return {
@@ -2603,6 +2766,7 @@ function resolveFlowSteps(
                       facilitatorCertificateUploaded,
                       facilitatorNotifications,
                       projectId,
+                      financeInvoicesData,
                     );
                   }
                   return {
@@ -2941,37 +3105,94 @@ export default function AssessorProjectQuickViewPage() {
               (effectiveQuickView.project as Record<string, unknown> | undefined)?.sector_id ??
               "",
           );
-          if (!sectorId) {
-            setFacilitatorAssessmentScoring({ loaded: true, payload: null, failed: true });
-          } else {
-            getCompanyAssessmentCriteriaBySector(sectorId)
-              .then((criteriaPayload) => {
-                if (cancelled) return null;
-                const crit =
-                  criteriaPayload && typeof criteriaPayload === "object"
-                    ? (criteriaPayload as Record<string, unknown>)
-                    : {};
-                const firstCriteriaId = resolveFirstSectorCriteriaId(crit);
-                if (!firstCriteriaId) return null;
-                return getAdminAssessmentScoring(projectId, firstCriteriaId);
-              })
-              .then((scoringPayload) => {
-                if (cancelled) return;
-                if (scoringPayload === null) {
-                  setFacilitatorAssessmentScoring({ loaded: true, payload: null, failed: true });
-                  return;
-                }
-                if (scoringPayload === undefined) return;
+          getAdminAssessmentScoring(projectId)
+            .then((allScoringPayload) => {
+              if (cancelled) return;
+              const allPayload = allScoringPayload as Record<string, unknown> | null;
+              if (allPayload && extractByCriteriaScoringEntries(allPayload).length > 0) {
+                setFacilitatorAssessmentScoring({ loaded: true, payload: allPayload, failed: false });
+                return;
+              }
+              if (!sectorId) {
                 setFacilitatorAssessmentScoring({
                   loaded: true,
-                  payload: scoringPayload as Record<string, unknown>,
-                  failed: false,
+                  payload: allPayload,
+                  failed: !allPayload,
                 });
-              })
-              .catch(() => {
-                if (!cancelled) setFacilitatorAssessmentScoring({ loaded: true, payload: null, failed: true });
-              });
-          }
+                return;
+              }
+              getCompanyAssessmentCriteriaBySector(sectorId)
+                .then((criteriaPayload) => {
+                  if (cancelled) return null;
+                  const crit =
+                    criteriaPayload && typeof criteriaPayload === "object"
+                      ? (criteriaPayload as Record<string, unknown>)
+                      : {};
+                  const firstCriteriaId = resolveFirstSectorCriteriaId(crit);
+                  if (!firstCriteriaId) return null;
+                  return getAdminAssessmentScoring(projectId, firstCriteriaId);
+                })
+                .then((scoringPayload) => {
+                  if (cancelled) return;
+                  if (scoringPayload === null) {
+                    setFacilitatorAssessmentScoring({
+                      loaded: true,
+                      payload: allPayload,
+                      failed: !allPayload,
+                    });
+                    return;
+                  }
+                  if (scoringPayload === undefined) return;
+                  setFacilitatorAssessmentScoring({
+                    loaded: true,
+                    payload: scoringPayload as Record<string, unknown>,
+                    failed: false,
+                  });
+                })
+                .catch(() => {
+                  if (!cancelled) {
+                    setFacilitatorAssessmentScoring({
+                      loaded: true,
+                      payload: allPayload,
+                      failed: !allPayload,
+                    });
+                  }
+                });
+            })
+            .catch(() => {
+              if (cancelled) return;
+              if (!sectorId) {
+                setFacilitatorAssessmentScoring({ loaded: true, payload: null, failed: true });
+                return;
+              }
+              getCompanyAssessmentCriteriaBySector(sectorId)
+                .then((criteriaPayload) => {
+                  if (cancelled) return null;
+                  const crit =
+                    criteriaPayload && typeof criteriaPayload === "object"
+                      ? (criteriaPayload as Record<string, unknown>)
+                      : {};
+                  const firstCriteriaId = resolveFirstSectorCriteriaId(crit);
+                  if (!firstCriteriaId) return null;
+                  return getAdminAssessmentScoring(projectId, firstCriteriaId);
+                })
+                .then((scoringPayload) => {
+                  if (cancelled) return;
+                  if (scoringPayload === null) {
+                    setFacilitatorAssessmentScoring({ loaded: true, payload: null, failed: true });
+                    return;
+                  }
+                  if (scoringPayload === undefined) return;
+                  setFacilitatorAssessmentScoring({
+                    loaded: true,
+                    payload: scoringPayload as Record<string, unknown>,
+                    failed: false,
+                  });
+                })
+                .catch(() => {
+                  if (!cancelled) setFacilitatorAssessmentScoring({ loaded: true, payload: null, failed: true });
+                });
+            });
           getAdminApprovedAssessorsCatalog()
             .then((payload) => {
               if (!cancelled) setFacilitatorAdminAssessors({ loaded: true, payload, failed: false });
@@ -3428,6 +3649,7 @@ export default function AssessorProjectQuickViewPage() {
       facilitatorPreliminaryScoringDone,
       facilitatorFinalScoringSubmitted,
       facilitatorCertificateUploaded,
+      financeInvoicesData,
     );
   }
   if (isFacilitatorProject) {
@@ -3498,6 +3720,87 @@ export default function AssessorProjectQuickViewPage() {
         "launch and training submitted by facilitator",
       ],
       responsibility: "Facilitator",
+    },
+    {
+      label: "2nd proforma invoice is done",
+      aliases: [
+        "2nd proforma invoice is done",
+        "2nd proforma invoice uploaded",
+        "2nd proforma need to be uploaded",
+        "proforma invoice uploaded by cii",
+      ],
+      responsibility: "CII",
+    },
+    {
+      label: "Supporting documents need to be uploaded by Facilitator",
+      aliases: [
+        "supporting documents need to be uploaded by facilitator",
+        "supporting documents need to be uploaded",
+        "consultant to upload supporting document",
+      ],
+      responsibility: "Facilitator",
+    },
+    {
+      label: "Supporting documents uploaded by Facilitator",
+      aliases: [
+        "supporting documents uploaded by facilitator",
+        "supporting documents uploaded",
+        "facilitator uploaded supporting documents",
+      ],
+      responsibility: "Facilitator",
+    },
+    {
+      label: "CII needs to review supporting documents",
+      aliases: [
+        "cii needs to review supporting documents",
+        "awaiting cii review",
+        "cii review supporting documents",
+      ],
+      responsibility: "CII",
+    },
+    {
+      label: "Supporting documents rejected by CII",
+      aliases: [
+        "supporting documents rejected by cii",
+        "supporting documents rejected",
+        "cii rejected supporting documents",
+        "rejected supporting document",
+      ],
+      responsibility: "CII",
+    },
+    {
+      label: "Facilitator needs to re-upload supporting documents",
+      aliases: [
+        "facilitator needs to re-upload supporting documents",
+        "facilitator re-upload supporting documents",
+        "re-upload supporting documents",
+      ],
+      responsibility: "Facilitator",
+    },
+    {
+      label: "Facilitator re-uploaded supporting documents",
+      aliases: [
+        "facilitator re-uploaded supporting documents",
+        "re-uploaded supporting documents",
+      ],
+      responsibility: "Facilitator",
+    },
+    {
+      label: "CII needs to review re-uploaded supporting documents",
+      aliases: [
+        "cii needs to review re-uploaded supporting documents",
+        "review re-uploaded supporting documents",
+      ],
+      responsibility: "CII",
+    },
+    {
+      label: "Supporting documents approved by CII",
+      aliases: [
+        "supporting documents approved by cii",
+        "supporting documents approved",
+        "approved supporting documents",
+      ],
+      responsibility: "CII",
     },
     {
       label: "2nd invoice payment done by consultant",

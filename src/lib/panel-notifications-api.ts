@@ -333,6 +333,75 @@ export function parseChecklistLatestStateFromNotifications(
   return { state: "none", category: "", remarks: "" };
 }
 
+export type ProformaNotificationState =
+  | "none"
+  | "2nd_proforma_uploaded"
+  | "supporting_docs_uploaded"
+  | "supporting_docs_awaiting_review"
+  | "supporting_docs_rejected"
+  | "supporting_docs_reuploaded"
+  | "supporting_docs_approved"
+  | "plaque_dispatched"
+  | "feedback_uploaded";
+
+export function parse2ndProformaLatestStateFromNotifications(
+  notifications: PanelNotification[],
+  projectId = "",
+): { state: ProformaNotificationState; remarks: string } {
+  const pid = projectId.trim().toLowerCase();
+  const ordered = [...notifications].sort((a, b) => {
+    const ta = Date.parse(a.createdAt || "") || 0;
+    const tb = Date.parse(b.createdAt || "") || 0;
+    return tb - ta;
+  });
+  for (const row of ordered) {
+    const rowProjectId = row.projectId?.trim().toLowerCase() ?? "";
+    if (pid && rowProjectId && rowProjectId !== pid) continue;
+    const blob = `${row.title} ${row.message}`.trim().toLowerCase();
+    const isSupportingDoc = blob.includes("supporting document") || blob.includes("supporting doc");
+    const remarksMatch = /remarks?[:\s–—-]*([^–—]+)/i.exec(blob);
+    const remarks = remarksMatch?.[1]?.trim() ?? "";
+
+    if (blob.includes("feedback") && (blob.includes("uploaded") || blob.includes("submitted") || blob.includes("done"))) {
+      return { state: "feedback_uploaded", remarks };
+    }
+
+    if (
+      (blob.includes("plaque") && (blob.includes("dispatched") || blob.includes("done") || blob.includes("raised"))) ||
+      (blob.includes("plaque") && blob.includes("certificate") && blob.includes("dispatched"))
+    ) {
+      return { state: "plaque_dispatched", remarks };
+    }
+
+    if (isSupportingDoc && (blob.includes("approved") || blob.includes("accepted")) && !blob.includes("not approved") && !blob.includes("not accepted")) {
+      return { state: "supporting_docs_approved", remarks };
+    }
+
+    if (isSupportingDoc && (blob.includes("rejected") || blob.includes("not approved") || blob.includes("not accepted"))) {
+      return { state: "supporting_docs_rejected", remarks };
+    }
+
+    if (isSupportingDoc && (blob.includes("re-upload") || blob.includes("reupload") || blob.includes("re upload"))) {
+      return { state: "supporting_docs_reuploaded", remarks };
+    }
+
+    if (isSupportingDoc && (blob.includes("uploaded") || blob.includes("submitted"))) {
+      if (blob.includes("awaiting") && blob.includes("review")) {
+        return { state: "supporting_docs_awaiting_review", remarks };
+      }
+      return { state: "supporting_docs_uploaded", remarks };
+    }
+
+    if (
+      blob.includes("2nd proforma") ||
+      (blob.includes("proforma invoice") && blob.includes("uploaded"))
+    ) {
+      return { state: "2nd_proforma_uploaded", remarks };
+    }
+  }
+  return { state: "none", remarks: "" };
+}
+
 export function refreshPanelNotifications(role: PanelNotificationRole): void {
   if (globalThis.window === undefined) return;
   globalThis.window.dispatchEvent(new CustomEvent(panelNotificationsRefreshEvent(role)));
