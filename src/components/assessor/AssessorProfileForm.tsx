@@ -31,6 +31,7 @@ import {
   validateAssessorProfile,
 } from "@/lib/assessor-profile-validation";
 import { AUTH_LOGIN_EMAIL_KEY, getAssessorIdFromStoredUser } from "@/lib/auth-user";
+import { formatDisplayDate } from "@/lib/date-format";
 
 const emptyForm: AssessorProfileFormValues = {
   consultantId: "",
@@ -233,21 +234,6 @@ function normalizeApprovalState(value: unknown): "approved" | "rejected" | "pend
     if (value === 0) return "pending";
   }
   return "";
-}
-
-function formatAccountActivationDate(value: string): string {
-  const raw = value.trim();
-  if (!raw) {
-    return "-";
-  }
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) {
-    return raw;
-  }
-  const day = String(parsed.getDate()).padStart(2, "0");
-  const month = String(parsed.getMonth() + 1).padStart(2, "0");
-  const year = String(parsed.getFullYear());
-  return `${day}-${month}-${year}`;
 }
 
 function normalizeAccountStatus(value: string): { label: string; className: string } {
@@ -892,7 +878,7 @@ export function AssessorProfileForm() {
     !isFacilitatorFlow && Boolean(approvalStatus || documentsApprovalStatus || profileStatus || approvalRemarks);
   const accountStatusView = useMemo(() => normalizeAccountStatus(form.accountStatus), [form.accountStatus]);
   const accountActivationDateView = useMemo(
-    () => formatAccountActivationDate(form.accountActivationDate),
+    () => formatDisplayDate(form.accountActivationDate),
     [form.accountActivationDate],
   );
 

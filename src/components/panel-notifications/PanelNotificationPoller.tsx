@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { addToastedNotificationId, getToastedNotificationIds } from "@/lib/panel-notifications-api";
 import { PanelNotificationToast } from "@/components/panel-notifications/PanelNotificationToast";
 import { usePanelNotifications } from "@/components/panel-notifications/PanelNotificationsProvider";
@@ -35,9 +35,9 @@ export function PanelNotificationPoller() {
     setActiveToast(next);
   }, [notifications, apiAvailable, role]);
 
-  const dismissActive = async () => {
+  const dismissActive = useCallback(async () => {
     if (!activeToast) return;
-    const { id, title, message } = activeToast;
+    const { id } = activeToast;
     addToastedNotificationId(role, id);
     try {
       await markSeen(id);
@@ -52,7 +52,22 @@ export function PanelNotificationPoller() {
       showingRef.current = true;
       setActiveToast(next);
     }
-  };
+  }, [activeToast, markSeen, role]);
+
+  const dismissActiveRef = useRef(dismissActive);
+  dismissActiveRef.current = dismissActive;
+
+  useEffect(() => {
+    if (!activeToast) return;
+
+    const timerId = globalThis.window.setTimeout(() => {
+      void dismissActiveRef.current();
+    }, 2000);
+
+    return () => {
+      globalThis.window.clearTimeout(timerId);
+    };
+  }, [activeToast?.id]);
 
   if (!activeToast) return null;
 

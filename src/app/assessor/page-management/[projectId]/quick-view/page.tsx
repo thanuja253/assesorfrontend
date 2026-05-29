@@ -82,26 +82,6 @@ function mapQuickviewAssessors(input: Record<string, unknown>[]): Record<string,
   });
 }
 
-function formatDateDDMMYYYY(value: unknown): string {
-  const raw = textValue(value);
-  if (!raw || raw === "—") return "—";
-
-  const onlyDatePart = raw.includes("T") ? raw.split("T")[0] : raw.split(" ")[0];
-  const parts = onlyDatePart.split(/[-/]/).filter(Boolean);
-  if (parts.length >= 3) {
-    const [a, b, c] = parts;
-    if (a.length === 4) return `${b.padStart(2, "0")}/${c.padStart(2, "0")}/${a}`;
-    if (c.length === 4) return `${a.padStart(2, "0")}/${b.padStart(2, "0")}/${c}`;
-  }
-
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return raw;
-  const dd = String(parsed.getDate()).padStart(2, "0");
-  const mm = String(parsed.getMonth() + 1).padStart(2, "0");
-  const yyyy = parsed.getFullYear();
-  return `${dd}/${mm}/${yyyy}`;
-}
-
 function toPlainString(value: unknown): string {
   return typeof value === "string" || typeof value === "number" ? String(value) : "";
 }
@@ -4225,12 +4205,12 @@ export default function AssessorProjectQuickViewPage() {
           <KVRow label="Account Status" value={accountStatusLabel} hidePlaceholder />
           <KVRow
             label="Activation Date"
-            value={formatDateDDMMYYYY(
+            value={
               company.activationDate ??
-                company.activation_date ??
-                company.status_updated_at ??
-                company.created_at,
-            )}
+              company.activation_date ??
+              company.status_updated_at ??
+              company.created_at
+            }
             hidePlaceholder
           />
         </SectionCard>
@@ -4414,17 +4394,12 @@ export default function AssessorProjectQuickViewPage() {
                     <KVRow label="Email" value={assessor?.email} hidePlaceholder />
                     <KVRow
                       label="Site Visit Date"
-                      value={(() => {
-                        const dates =
-                          assessor?.visit_dates ??
-                          assessor?.visitDate ??
-                          assessor?.visit_date ??
-                          assessor?.site_visit_date;
-                        if (Array.isArray(dates)) {
-                          return dates.map((d) => formatDateDDMMYYYY(d)).join(", ");
-                        }
-                        return formatDateDDMMYYYY(dates);
-                      })()}
+                      value={
+                        assessor?.visit_dates ??
+                        assessor?.visitDate ??
+                        assessor?.visit_date ??
+                        assessor?.site_visit_date
+                      }
                       hidePlaceholder
                     />
                   </div>

@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { formatDisplayDate, isDateFieldLabel } from "@/lib/date-format";
 
 export function textValue(value: unknown): string {
   if (value === null || value === undefined) return "—";
@@ -44,7 +45,7 @@ export function KVRow({
   value,
   hidePlaceholder = false,
 }: Readonly<{ label: string; value: unknown; hidePlaceholder?: boolean }>) {
-  const normalized = textValue(value);
+  const normalized = isDateFieldLabel(label) ? formatDisplayDate(value) : textValue(value);
   const display = hidePlaceholder && normalized === "—" ? "" : normalized;
   return (
     <div className="grid grid-cols-[180px_16px_1fr] gap-x-2 py-1.5 text-sm">
