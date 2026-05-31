@@ -79,6 +79,21 @@ export function AssessorNotificationPoller() {
     dequeueNext();
   }, [activeToast, dequeueNext]);
 
+  const dismissToastRef = useRef(dismissToast);
+  dismissToastRef.current = dismissToast;
+
+  useEffect(() => {
+    if (!activeToast) return;
+
+    const timerId = globalThis.window.setTimeout(() => {
+      void dismissToastRef.current();
+    }, 2000);
+
+    return () => {
+      globalThis.window.clearTimeout(timerId);
+    };
+  }, [activeToast?.id]);
+
   if (!activeToast) return null;
 
   return (

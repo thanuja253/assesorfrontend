@@ -1,10 +1,11 @@
 "use client";
 
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AuthApiError, fetchAssessorGrades, fetchIndustries, fetchStates, getApiUrl, type SelectOption } from "@/lib/auth-api";
+import { AuthApiError, fetchAssessorGrades, fetchIndustries, fetchStates, type SelectOption } from "@/lib/auth-api";
+import { resolvePublicFileUrl } from "@/lib/storage/public-url";
 import {
   type AssessorProfileFileKey,
-  buildAssessorProfileFormData,
+  buildAssessorProfileFormDataWithStorage,
   getAssessorMyProfile,
   lookupBankDetailsByIfsc,
   patchAssessorSelfProfile,
@@ -310,13 +311,7 @@ function pickProfileImageUrl(payload: Record<string, unknown>): string {
 }
 
 function resolveServerAssetUrl(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-  if (/^(blob:|data:|https?:\/\/)/i.test(trimmed)) {
-    return trimmed;
-  }
-  const normalized = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
-  return getApiUrl(normalized);
+  return resolvePublicFileUrl(value);
 }
 
 function isProfileLockedFromPayload(payload: Record<string, unknown>): boolean {
@@ -1146,7 +1141,7 @@ export function AssessorProfileForm() {
     setSavingKind("draft");
     setSaving(true);
     try {
-      const body = buildAssessorProfileFormData(form, files, {
+      const body = await buildAssessorProfileFormDataWithStorage(form, files, {
         includeBankDetails: false,
         includeDocuments: false,
       });
@@ -1221,7 +1216,7 @@ export function AssessorProfileForm() {
     }
     setFieldErrors({});
 
-    const body = buildAssessorProfileFormData(form, files);
+    const body = await buildAssessorProfileFormDataWithStorage(form, files);
     appendProfileSubmitMeta(body, finalSubmit, docStatuses);
     setSavingKind(finalSubmit ? "final" : "draft");
     setSaving(true);

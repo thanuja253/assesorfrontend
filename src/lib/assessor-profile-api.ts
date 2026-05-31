@@ -1,6 +1,7 @@
 import { AuthApiError, getApiUrl, parseApiErrorMessage } from "@/lib/auth-api";
-import { AUTH_TOKEN_KEY } from "@/lib/auth-user";
+import { AUTH_TOKEN_KEY, getAssessorIdFromStoredUser } from "@/lib/auth-user";
 import type { AssessorProfileFormValues } from "@/lib/assessor-profile-map";
+import { augmentFormDataWithS3Uploads } from "@/lib/storage/form-data";
 
 function getBearerToken(): string | null {
   if (globalThis.window === undefined) {
@@ -329,6 +330,20 @@ export function buildAssessorProfileFormData(
   });
 
   return fd;
+}
+
+/** Profile multipart body with files uploaded to S3 when enabled. */
+export async function buildAssessorProfileFormDataWithStorage(
+  values: AssessorProfileFormValues,
+  files: Partial<Record<AssessorProfileFileKey, File | null>>,
+  options?: Parameters<typeof buildAssessorProfileFormData>[2],
+): Promise<FormData> {
+  const fd = buildAssessorProfileFormData(values, files, options);
+  const entityId = getAssessorIdFromStoredUser() ?? values.email.trim() || "unknown";
+  return augmentFormDataWithS3Uploads(fd, {
+    scope: "profiles/assessor",
+    entityId,
+  });
 }
 
 export type IfscLookupData = {
