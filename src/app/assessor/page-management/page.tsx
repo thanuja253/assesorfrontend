@@ -1,14 +1,13 @@
 "use client";
 
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import {
-  AuthApiError,
-  getApiUrl,
+  fetchAssessorCompaniesFilters,
   listAssessorProjects,
   type AssessorProjectListFilters,
   type AssessorProjectListItem,
 } from "@/lib/auth-api";
-import { AUTH_TOKEN_KEY } from "@/lib/auth-user";
+import { useCachedFetch } from "@/hooks/use-cached-fetch";
 
 type FiltersState = Required<AssessorProjectListFilters>;
 type FilterErrors = Partial<Record<"project_id" | "email" | "mobile" | "turnover", string>>;
@@ -210,13 +209,10 @@ function accountStatusText(row: AssessorProjectListItem): string {
 export default function AssessorProjectManagementPage() {
   const [draftFilters, setDraftFilters] = useState<FiltersState>(DEFAULT_FILTERS);
   const [appliedFilters, setAppliedFilters] = useState<FiltersState>(DEFAULT_FILTERS);
-  const [rows, setRows] = useState<AssessorProjectListItem[]>([]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [showFilters, setShowFilters] = useState(false);
   const [filterErrors, setFilterErrors] = useState<FilterErrors>({});
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [industryOptions, setIndustryOptions] = useState<Option[]>([]);
   const [entityOptions, setEntityOptions] = useState<Option[]>([]);
@@ -224,106 +220,78 @@ export default function AssessorProjectManagementPage() {
   const [sectorOptions, setSectorOptions] = useState<Option[]>([]);
   const [accountStatusOptions, setAccountStatusOptions] = useState<Option[]>(DEFAULT_ACCOUNT_STATUS_OPTIONS);
 
+  const listCacheKey = useMemo(() => {
+    const filters = cleanFilters(appliedFilters);
+    return `${page}:${pageSize}:${JSON.stringify(filters)}`;
+  }, [appliedFilters, page, pageSize]);
+
+  const fetchProjectList = useCallback(
+    () =>
+      listAssessorProjects({
+        ...cleanFilters(appliedFilters),
+        draw: page,
+        start: (page - 1) * pageSize,
+        length: pageSize,
+        page,
+        limit: pageSize,
+      }),
+    [appliedFilters, page, pageSize],
+  );
+
+  const {
+    data: listResult,
+    loading,
+    error: listError,
+  } = useCachedFetch(fetchProjectList, {
+    scope: "listing",
+    cacheKey: listCacheKey,
+  });
+
+  const rows = listResult?.items ?? [];
+  const total = listResult?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      setLoading(true);
+    if (!listError) {
       setErrorMessage("");
-      try {
-        const result = await listAssessorProjects({
-          ...cleanFilters(appliedFilters),
-          draw: page,
-          start: (page - 1) * pageSize,
-          length: pageSize,
-          page,
-          limit: pageSize,
-        });
-        if (cancelled) {
-          return;
-        }
-        setRows(result.items);
-        setTotal(result.total);
-      } catch (error) {
-        if (cancelled) {
-          return;
-        }
-        if (error instanceof AuthApiError) {
-          setErrorMessage(error.message);
-        } else {
-          setErrorMessage("Unable to load project list.");
-        }
-        setRows([]);
-        setTotal(0);
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    };
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [appliedFilters, page, pageSize]);
+      return;
+    }
+    setErrorMessage(listError);
+  }, [listError]);
+
+  const toFilterOptions = useCallback((list: unknown[]): Option[] => {
+    return list
+      .map((item) => {
+        if (typeof item === "string") return { value: item, label: item };
+        if (!item || typeof item !== "object") return null;
+        const rec = item as Record<string, unknown>;
+        const label = asText(rec.name ?? rec.label ?? rec.value ?? rec.industry ?? rec.entity ?? rec.state ?? "");
+        const value = asText(rec.id ?? rec.code ?? rec.value ?? label);
+        if (!label && !value) return null;
+        return { value: value || label, label: label || value };
+      })
+      .filter((item): item is Option => item !== null);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     const loadFilterOptions = async () => {
       try {
-        const token = globalThis.window?.localStorage.getItem(AUTH_TOKEN_KEY) ?? "";
-        const headers: HeadersInit = {
-          Accept: "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        };
-
-        const candidates = ["/api/company/auth/companies-filters", "/api/companys/auth/companies-filters"];
-        let filtersData: Record<string, unknown> | null = null;
-        for (const path of candidates) {
-          const response = await fetch(getApiUrl(path), { method: "GET", headers, cache: "no-store" });
-          if (!response.ok) {
-            if (response.status === 404) continue;
-            throw new Error("Could not load filter options.");
-          }
-          filtersData = (await response.json().catch(() => null)) as Record<string, unknown> | null;
-          break;
-        }
-        if (!filtersData) {
-          throw new Error("Could not load filter options.");
-        }
+        const filtersPayload = await fetchAssessorCompaniesFilters();
         if (cancelled) return;
-        const filtersPayload =
-          filtersData && typeof filtersData.data === "object" && filtersData.data
-            ? (filtersData.data as Record<string, unknown>)
-            : {};
 
-        const toOptions = (list: unknown[]): Option[] =>
-          list
-            .map((item) => {
-              if (typeof item === "string") return { value: item, label: item };
-              if (!item || typeof item !== "object") return null;
-              const rec = item as Record<string, unknown>;
-              const label = asText(rec.name ?? rec.label ?? rec.value ?? rec.industry ?? rec.entity ?? rec.state ?? "");
-              const value = asText(rec.id ?? rec.code ?? rec.value ?? label);
-              if (!label && !value) return null;
-              return { value: value || label, label: label || value };
-            })
-            .filter((item): item is Option => item !== null);
-
-        setIndustryOptions(toOptions(Array.isArray(filtersPayload.industries) ? filtersPayload.industries : []));
-        setEntityOptions(toOptions(Array.isArray(filtersPayload.entities) ? filtersPayload.entities : []));
-        setStateOptions(toOptions(Array.isArray(filtersPayload.states) ? filtersPayload.states : []));
-        setSectorOptions(toOptions(Array.isArray(filtersPayload.sectors) ? filtersPayload.sectors : []));
+        setIndustryOptions(toFilterOptions(filtersPayload.industries));
+        setEntityOptions(toFilterOptions(filtersPayload.entities));
+        setStateOptions(toFilterOptions(filtersPayload.states));
+        setSectorOptions(toFilterOptions(filtersPayload.sectors));
         setAccountStatusOptions(
-          toOptions(Array.isArray(filtersPayload.account_statuses) ? filtersPayload.account_statuses : [])
-            .map((option) => {
-              const normalized = option.label.trim().toLowerCase();
-              if (normalized === "active") return { value: "1", label: option.label };
-              if (normalized === "in active" || normalized === "inactive") return { value: "0", label: option.label };
-              if (option.value === "1" || option.value === "0") return option;
-              return option;
-            }),
+          toFilterOptions(filtersPayload.account_statuses).map((option) => {
+            const normalized = option.label.trim().toLowerCase();
+            if (normalized === "active") return { value: "1", label: option.label };
+            if (normalized === "in active" || normalized === "inactive") return { value: "0", label: option.label };
+            if (option.value === "1" || option.value === "0") return option;
+            return option;
+          }),
         );
       } catch {
         if (!cancelled) {
@@ -339,7 +307,7 @@ export default function AssessorProjectManagementPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [toFilterOptions]);
 
   const onSearch = () => {
     const nextErrors: FilterErrors = {};

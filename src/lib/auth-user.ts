@@ -11,6 +11,9 @@ export function clearAssessorSession(): void {
   window.localStorage.removeItem(AUTH_TOKEN_KEY);
   window.localStorage.removeItem(AUTH_USER_STORAGE_KEY);
   window.localStorage.removeItem(AUTH_LOGIN_EMAIL_KEY);
+  import("@/lib/api-cache")
+    .then(({ clearApiCache }) => clearApiCache())
+    .catch(() => undefined);
 }
 
 export type StoredAuthUser = Record<string, unknown>;

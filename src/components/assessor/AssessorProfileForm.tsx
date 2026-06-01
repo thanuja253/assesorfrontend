@@ -25,6 +25,7 @@ import {
   validateAssessorProfile,
 } from "@/lib/assessor-profile-validation";
 import { AUTH_LOGIN_EMAIL_KEY, getAssessorIdFromStoredUser } from "@/lib/auth-user";
+import { formatUploadAllowedHint, UPLOAD_ALLOWED } from "@/lib/upload-allowed";
 
 const emptyForm: AssessorProfileFormValues = {
   name: "",
@@ -1391,12 +1392,12 @@ export function AssessorProfileForm() {
                   ) : null}
                   {!profileLocked ? (
                     <div className="space-y-1">
-                      <p className="text-xs font-medium text-[#606a78]">Profile image (PNG / JPEG)</p>
-                      <div className="flex max-w-[260px] items-center gap-2">
+                      <p className="text-xs font-medium text-[#606a78]">Profile image</p>
+                      <div className="flex max-w-full flex-wrap items-center gap-2">
                         <input
                           ref={profileImageInputRef}
                           type="file"
-                          accept="image/png,image/jpeg,image/jpg"
+                          accept={UPLOAD_ALLOWED.profileImage.accept}
                           className="hidden"
                           onChange={(event) => {
                             const file = event.target.files?.[0] ?? null;
@@ -1413,6 +1414,9 @@ export function AssessorProfileForm() {
                         >
                           Upload
                         </button>
+                        <span className="text-[11px] text-[#6f7b8f]">
+                          {formatUploadAllowedHint(UPLOAD_ALLOWED.profileImage)}
+                        </span>
                         {profileImagePreviewUrl || serverProfileImageUrl ? (
                           <a
                             className="rounded border border-[#d2dbe8] bg-white px-2 py-1 text-xs text-[#3b79b3] hover:bg-[#f3f7ff]"
@@ -1989,9 +1993,6 @@ export function AssessorProfileForm() {
                     <p className="text-sm font-semibold text-[#2f3a46]">
                       Upload Documents <span className="text-[#d63f3f]">*</span>
                     </p>
-                    <p className="mt-1 text-xs text-[#6f7b8f]">
-                      Allowed: .pdf, .jpg, .png, .jpeg (max 10MB each). Profile image supports PNG/JPEG.
-                    </p>
                   </div>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
@@ -2067,7 +2068,7 @@ export function AssessorProfileForm() {
                                     fileInputsRef.current[row.key] = node;
                                   }}
                                   type="file"
-                                  accept="application/pdf,image/jpg,image/jpeg,image/png"
+                                  accept={UPLOAD_ALLOWED.profileDocument.accept}
                                   className="hidden"
                                   onChange={(event) => {
                                     const file = event.target.files?.[0] ?? null;
@@ -2089,6 +2090,9 @@ export function AssessorProfileForm() {
                                 >
                                   Upload
                                 </button>
+                                <span className="text-[11px] text-[#6f7b8f]">
+                                  {formatUploadAllowedHint(UPLOAD_ALLOWED.profileDocument)}
+                                </span>
                               </>
                             ) : null}
                             {hasSelected ? (

@@ -1,3 +1,4 @@
+import { API_CACHE_TTL, getCached, invalidateAfterProjectMutation } from "@/lib/api-cache";
 import { AuthApiError, getApiUrl, parseApiErrorMessage } from "@/lib/auth-api";
 import { AUTH_TOKEN_KEY } from "@/lib/auth-user";
 
@@ -24,6 +25,22 @@ function ensureProjectId(projectId: string): string {
   return id;
 }
 
+function projectIdFromApiPaths(paths: string[]): string {
+  for (const path of paths) {
+    const nested = path.match(/\/projects\/([^/?]+)/);
+    if (nested?.[1]) {
+      return decodeURIComponent(nested[1]);
+    }
+    const legacy = path.match(
+      /\/(?:auth\/)?(?:expenses|assesment_scoring|assessment_scoring|quickview|companyvisitdetails|checklistdocs_view)\/([^/?]+)/,
+    );
+    if (legacy?.[1]) {
+      return decodeURIComponent(legacy[1]);
+    }
+  }
+  return "";
+}
+
 async function parseJsonSafe(response: Response): Promise<unknown> {
   const text = await response.text();
   if (!text) return null;
@@ -46,7 +63,7 @@ function normalizePayload(data: unknown): Record<string, unknown> {
   return root;
 }
 
-async function getJsonFromPaths(paths: string[]): Promise<Record<string, unknown>> {
+async function getJsonFromPathsUncached(paths: string[]): Promise<Record<string, unknown>> {
   const headers = authHeaders();
   let lastStatus = 500;
   let lastData: unknown = null;
@@ -57,7 +74,6 @@ async function getJsonFromPaths(paths: string[]): Promise<Record<string, unknown
       response = await fetch(getApiUrl(path), {
         method: "GET",
         headers,
-        cache: "no-store",
       });
     } catch {
       throw new AuthApiError(0, "Network error. Please try again.");
@@ -87,6 +103,11 @@ async function getJsonFromPaths(paths: string[]): Promise<Record<string, unknown
   throw new AuthApiError(lastStatus || 500, parseApiErrorMessage(lastData) ?? "Could not load project data.");
 }
 
+async function getJsonFromPaths(paths: string[]): Promise<Record<string, unknown>> {
+  const cacheKey = paths.join("|");
+  return getCached("page", cacheKey, API_CACHE_TTL.page, () => getJsonFromPathsUncached(paths));
+}
+
 async function postJsonToPaths(
   paths: string[],
   body: Record<string, unknown>,
@@ -113,6 +134,10 @@ async function postJsonToPaths(
     lastData = data;
 
     if (response.ok) {
+      const projectId = typeof body.project_id === "string" ? body.project_id : "";
+      if (projectId) {
+        invalidateAfterProjectMutation(projectId);
+      }
       return normalizePayload(data);
     }
     if (response.status !== 404) {
@@ -206,6 +231,10 @@ async function postFormDataToPaths(
     lastData = data;
 
     if (response.ok) {
+      const projectId = projectIdFromApiPaths(paths);
+      if (projectId) {
+        invalidateAfterProjectMutation(projectId);
+      }
       return normalizePayload(data);
     }
     if (response.status !== 404) {

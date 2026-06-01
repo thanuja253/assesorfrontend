@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { AuthApiError } from "@/lib/auth-api";
 import { createAdminExpenseInvoice, getAdminExpenseInvoices } from "@/lib/assessor-project-api";
+import { formatUploadAllowedHint, UPLOAD_ALLOWED } from "@/lib/upload-allowed";
 
 const GST_DECIMAL_REGEX = /^\d+(\.\d{1,2})?$/;
 const TITLE_REGEX = /^[A-Za-z0-9 _-]{3,50}$/;
@@ -332,6 +333,9 @@ export default function AssessorProjectExpensesPage() {
           <label className="grid grid-cols-[170px_12px_1fr] items-center gap-x-2">
             <span className="text-[#5c6777]">
               Upload Expense Document<span className="text-[#d8232a]">*</span>
+              <span className="ml-1 text-[11px] font-normal text-[#6f7b8f]">
+                {formatUploadAllowedHint(UPLOAD_ALLOWED.expenseDocument)}
+              </span>
             </span>
             <span className="text-[#9099a8]">:</span>
             <div className="flex h-[36px] overflow-hidden rounded border border-[#d7dfe9]">
@@ -339,6 +343,7 @@ export default function AssessorProjectExpensesPage() {
                 id="expense-file-input"
                 className="hidden"
                 type="file"
+                accept={UPLOAD_ALLOWED.expenseDocument.accept}
                 disabled={viewOnly}
                 onChange={(e) => {
                   setFile(e.target.files?.[0]);

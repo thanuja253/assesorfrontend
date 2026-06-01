@@ -1,3 +1,4 @@
+import { API_CACHE_TTL, getCached } from "@/lib/api-cache";
 import { AUTH_TOKEN_KEY } from "@/lib/auth-user";
 
 type LoginPayload = {
@@ -131,6 +132,10 @@ export function loginCompany(payload: LoginPayload): Promise<LoginSuccess> {
 }
 
 export async function fetchAssessorGrades(): Promise<string[]> {
+  return getCached("filters", "assessor-grades", API_CACHE_TTL.filters, fetchAssessorGradesUncached);
+}
+
+async function fetchAssessorGradesUncached(): Promise<string[]> {
   let response: Response;
   try {
     const token = getStoredToken();
@@ -195,6 +200,10 @@ function uniqByValue(options: SelectOption[]): SelectOption[] {
 }
 
 export async function fetchStates(): Promise<SelectOption[]> {
+  return getCached("filters", "company-states", API_CACHE_TTL.filters, fetchStatesUncached);
+}
+
+async function fetchStatesUncached(): Promise<SelectOption[]> {
   let response: Response;
   try {
     response = await fetch(getApiUrl("/api/company/states"), {
@@ -242,6 +251,10 @@ export async function fetchStates(): Promise<SelectOption[]> {
 }
 
 export async function fetchIndustries(): Promise<SelectOption[]> {
+  return getCached("filters", "admin-industries", API_CACHE_TTL.filters, fetchIndustriesUncached);
+}
+
+async function fetchIndustriesUncached(): Promise<SelectOption[]> {
   let response: Response;
   try {
     response = await fetch(getApiUrl("/api/admin/masters/industries"), {
@@ -473,8 +486,78 @@ function throwAssessorProjectsError(status: number, data: unknown): never {
  * GET /api/assessor/auth/myprojects
  * Legacy aliases supported by backend: /api/assessor/auth/companylist, /api/assessor/auth/company_data
  */
+export type AssessorCompaniesFilterPayload = {
+  industries: unknown[];
+  entities: unknown[];
+  states: unknown[];
+  sectors: unknown[];
+  account_statuses: unknown[];
+};
+
+/**
+ * GET companies-filters — industries, entities, states, sectors, account statuses.
+ */
+export async function fetchAssessorCompaniesFilters(): Promise<AssessorCompaniesFilterPayload> {
+  return getCached("filters", "companies-filters", API_CACHE_TTL.filters, fetchAssessorCompaniesFiltersUncached);
+}
+
+async function fetchAssessorCompaniesFiltersUncached(): Promise<AssessorCompaniesFilterPayload> {
+  const token = getStoredToken();
+  const headers: HeadersInit = {
+    Accept: "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+  const candidates = ["/api/company/auth/companies-filters", "/api/companys/auth/companies-filters"];
+  let filtersData: Record<string, unknown> | null = null;
+  for (const path of candidates) {
+    let response: Response;
+    try {
+      response = await fetch(getApiUrl(path), { method: "GET", headers });
+    } catch {
+      throw new AuthApiError(0, "Network error. Please try again.");
+    }
+    if (!response.ok) {
+      if (response.status === 404) {
+        continue;
+      }
+      throw new AuthApiError(response.status, "Could not load filter options.");
+    }
+    filtersData = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+    break;
+  }
+  if (!filtersData) {
+    throw new AuthApiError(500, "Could not load filter options.");
+  }
+  const filtersPayload =
+    filtersData && typeof filtersData.data === "object" && filtersData.data
+      ? (filtersData.data as Record<string, unknown>)
+      : filtersData;
+  return {
+    industries: Array.isArray(filtersPayload.industries) ? filtersPayload.industries : [],
+    entities: Array.isArray(filtersPayload.entities) ? filtersPayload.entities : [],
+    states: Array.isArray(filtersPayload.states) ? filtersPayload.states : [],
+    sectors: Array.isArray(filtersPayload.sectors) ? filtersPayload.sectors : [],
+    account_statuses: Array.isArray(filtersPayload.account_statuses)
+      ? filtersPayload.account_statuses
+      : [],
+  };
+}
+
 export async function listAssessorProjects(
   params: AssessorProjectListParams = {},
+): Promise<AssessorProjectListResult> {
+  const page = toPositiveNumber(params.page, 1);
+  const limit = toPositiveNumber(params.limit, 10);
+  const queryString = toQueryString({ ...params, page, limit });
+  const cacheKey = `projects:${queryString}`;
+  return getCached("listing", cacheKey, API_CACHE_TTL.listing, () =>
+    listAssessorProjectsUncached({ ...params, page, limit }, queryString),
+  );
+}
+
+async function listAssessorProjectsUncached(
+  params: AssessorProjectListParams,
+  queryString: string,
 ): Promise<AssessorProjectListResult> {
   const token = getStoredToken();
   if (!token) {
@@ -483,7 +566,6 @@ export async function listAssessorProjects(
 
   const page = toPositiveNumber(params.page, 1);
   const limit = toPositiveNumber(params.limit, 10);
-  const queryString = toQueryString({ ...params, page, limit });
   const paths = [
     "/api/assessor/auth/myprojects",
     "/api/assessor/auth/companylist",
