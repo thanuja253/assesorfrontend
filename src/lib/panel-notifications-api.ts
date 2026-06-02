@@ -485,7 +485,10 @@ export async function markPanelNotificationSeen(
 
   if (!response.ok) {
     const data = await parseJsonSafe(response);
-    throw new AuthApiError(response.status, parseApiErrorMessage(data, "Could not update notification."));
+    throw new AuthApiError(
+      response.status,
+      parseApiErrorMessage(data) ?? "Could not update notification.",
+    );
   }
 }
 
