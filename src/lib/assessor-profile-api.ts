@@ -339,7 +339,7 @@ export async function buildAssessorProfileFormDataWithStorage(
   options?: Parameters<typeof buildAssessorProfileFormData>[2],
 ): Promise<FormData> {
   const fd = buildAssessorProfileFormData(values, files, options);
-  const entityId = getAssessorIdFromStoredUser() ?? values.email.trim() || "unknown";
+  const entityId = getAssessorIdFromStoredUser() ?? (values.email.trim() || "unknown");
   return augmentFormDataWithS3Uploads(fd, {
     scope: "profiles/assessor",
     entityId,
