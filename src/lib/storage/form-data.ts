@@ -35,7 +35,6 @@ export async function augmentFormDataWithS3Uploads(
   for (const { field, file } of fileEntries) {
     const uploaded = await uploadFileToStorage(file, {
       scope: context.scope,
-      fileName: file.name,
       entityId: context.entityId,
       projectId: context.projectId,
       subfolder: context.subfolder,

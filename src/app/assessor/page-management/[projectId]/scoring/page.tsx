@@ -256,10 +256,9 @@ export default function AssessorProjectScoringPage() {
           ...row,
           preliminary_score: resolvePreScore(row),
           coordinator_remarks:
-            row.coordinator_remarks ??
-            (row as Record<string, unknown>).coordinatorremarks ??
-            (row as Record<string, unknown>).remarks ??
-            "",
+            toStringSafe(row.coordinator_remarks) ||
+            toStringSafe((row as Record<string, unknown>).coordinatorremarks) ||
+            toStringSafe((row as Record<string, unknown>).remarks),
         }));
         setRows(scoringRows);
         const nextScores: Record<string, string> = {};
