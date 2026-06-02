@@ -127,6 +127,10 @@ export function loginAssessor(payload: LoginPayload): Promise<LoginSuccess> {
   return loginRequest("/api/assessor/auth/login", payload);
 }
 
+export function loginFacilitator(payload: LoginPayload): Promise<LoginSuccess> {
+  return loginRequest("/api/facilitator/auth/login", payload);
+}
+
 export function loginCompany(payload: LoginPayload): Promise<LoginSuccess> {
   return loginRequest("/api/company/auth/login", payload);
 }
