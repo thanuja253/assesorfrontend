@@ -7,6 +7,7 @@ import {
   downloadAssessmentChecklistSampleDocument,
   getCompanyProjectChecklistDocuments,
 } from "@/lib/assessor-project-api";
+import { resolveDocumentUrl } from "@/lib/s3-upload";
 import { textValue } from "../_ui";
 
 type DocRow = {
@@ -163,7 +164,7 @@ export default function AssessorProjectChecklistDocumentsPage() {
           ) : (
             <div className="space-y-2">
               {rows.map((row, idx) => {
-                const fileUrl = row.document_url ?? row.file_url ?? row.url ?? row.file ?? "";
+                const fileUrl = resolveDocumentUrl(row as Record<string, unknown>);
                 return (
                   <div
                     key={`${row.id ?? idx}`}

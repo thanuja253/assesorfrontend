@@ -7,6 +7,7 @@ import {
   getFacilitatorProjectLaunchTraining,
   uploadFacilitatorProjectLaunchTrainingSession,
 } from "@/lib/assessor-project-api";
+import { resolveDocumentUrl } from "@/lib/s3-upload";
 
 type SessionForm = {
   sessionDate: string;
@@ -243,7 +244,7 @@ export default function AssessorProjectLaunchTrainingPage() {
       <div className="grid gap-3 md:grid-cols-2">
         {cards.map((card) => {
           const session = sessionsByIndex[card.index] ?? {};
-          const uploadedUrl = asText(session.document_url ?? session.file_url ?? session.url);
+          const uploadedUrl = resolveDocumentUrl(session);
           const uploadedFilename = asText(
             session.document_filename ??
               session.file_name ??

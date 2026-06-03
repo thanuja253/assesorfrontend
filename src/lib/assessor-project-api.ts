@@ -1,5 +1,6 @@
 import { AuthApiError, getApiUrl, parseApiErrorMessage } from "@/lib/auth-api";
 import { AUTH_TOKEN_KEY } from "@/lib/auth-user";
+import { appendS3FileToFormData, S3_FOLDERS } from "@/lib/s3-upload";
 
 async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
   return fetch(url, init);
@@ -495,7 +496,11 @@ export async function uploadFacilitatorSignedContractDocument(
   await ensureFacilitatorFlowProject(projectId);
   const id = encodeURIComponent(ensureProjectId(projectId));
   const formData = new FormData();
-  formData.set("contract_document", contractDocument);
+  await appendS3FileToFormData(formData, {
+    file: contractDocument,
+    folder: S3_FOLDERS.facilitatorContract(projectId),
+    field: "contract_document",
+  });
   return await postFormDataToPaths(
     [`/api/facilitator/projects/${id}/signed-contract-document`],
     formData,
@@ -511,7 +516,11 @@ export async function reuploadFacilitatorSignedContractDocument(
   await ensureFacilitatorFlowProject(projectId);
   const id = encodeURIComponent(ensureProjectId(projectId));
   const formData = new FormData();
-  formData.set("contract_document", contractDocument);
+  await appendS3FileToFormData(formData, {
+    file: contractDocument,
+    folder: S3_FOLDERS.facilitatorContract(projectId),
+    field: "contract_document",
+  });
   return await postFormDataToPaths(
     [`/api/facilitator/projects/${id}/signed-contract-document/reupload`],
     formData,
@@ -740,7 +749,11 @@ export async function uploadCompanyProjectWorkOrderDocument(
   await ensureFacilitatorFlowProject(projectId);
   const id = encodeURIComponent(ensureProjectId(projectId));
   const formData = new FormData();
-  formData.set("workorderdocument", workorderdocument);
+  await appendS3FileToFormData(formData, {
+    file: workorderdocument,
+    folder: S3_FOLDERS.workOrder(projectId),
+    field: "workorderdocument",
+  });
   return await postFormDataToPaths([
     `/api/company/projects/${id}/facilitator-contract-document`,
     `/api/company/projects/${id}/work-order-document`,
@@ -785,7 +798,11 @@ export async function reuploadCompanyProjectWorkOrderDocument(
   await ensureFacilitatorFlowProject(projectId);
   const id = encodeURIComponent(ensureProjectId(projectId));
   const formData = new FormData();
-  formData.set("workorderdocument", workorderdocument);
+  await appendS3FileToFormData(formData, {
+    file: workorderdocument,
+    folder: S3_FOLDERS.workOrder(projectId),
+    field: "workorderdocument",
+  });
   return await postFormDataToPaths([
     `/api/company/projects/${id}/facilitator-contract-document/reupload`,
     `/api/company/projects/${id}/work-order-document/reupload`,
@@ -887,8 +904,12 @@ export async function uploadProjectLaunchTrainingSession(
   if (payload.sessionTime?.trim()) {
     formData.set("session_time", payload.sessionTime.trim());
   }
-  formData.set("document", payload.document);
-  formData.set("file", payload.document);
+  await appendS3FileToFormData(formData, {
+    file: payload.document,
+    folder: S3_FOLDERS.launchTraining(projectId),
+    field: "document",
+    extraKeyFields: ["file_s3_key", "document_file_s3_key"],
+  });
   return await postFormDataToPaths(
     [
       `/api/company/projects/${id}/launch-training`,
@@ -932,13 +953,18 @@ export async function uploadFacilitatorProjectLaunchTrainingSession(
   if (sessionTime) {
     formData.set("session_time", sessionTime);
   }
-  // Facilitator endpoints support these aliases.
-  formData.set("launch_session_file", payload.document);
-  formData.set("file", payload.document);
-  formData.set("document", payload.document);
-  formData.set("document_file", payload.document);
-  formData.set("upload", payload.document);
-  formData.set("launch_upload", payload.document);
+  await appendS3FileToFormData(formData, {
+    file: payload.document,
+    folder: S3_FOLDERS.launchTraining(projectId),
+    field: "document",
+    extraKeyFields: [
+      "launch_session_file_s3_key",
+      "file_s3_key",
+      "document_file_s3_key",
+      "upload_s3_key",
+      "launch_upload_s3_key",
+    ],
+  });
 
   return await postFormDataToPaths(
     [
@@ -1084,7 +1110,11 @@ export async function createAdminExpenseInvoice(
   formData.set("payment_date", payload.payment_date);
   formData.set("payment_for", "expA");
   if (payload.regFeeInvoice) {
-    formData.set("regFeeInvoice", payload.regFeeInvoice);
+    await appendS3FileToFormData(formData, {
+      file: payload.regFeeInvoice,
+      folder: S3_FOLDERS.financePayment(projectId),
+      field: "regFeeInvoice",
+    });
   }
   return await postFormDataToPaths(
     [
@@ -1126,7 +1156,13 @@ export async function updateAdminExpenseInvoice(
   if (payload.igst !== undefined) formData.set("igst", payload.igst);
   if (payload.payment_date !== undefined) formData.set("payment_date", payload.payment_date);
   formData.set("payment_for", payload.payment_for ?? "expA");
-  if (payload.regFeeInvoice) formData.set("regFeeInvoice", payload.regFeeInvoice);
+  if (payload.regFeeInvoice) {
+    await appendS3FileToFormData(formData, {
+      file: payload.regFeeInvoice,
+      folder: S3_FOLDERS.financePayment(projectId),
+      field: "regFeeInvoice",
+    });
+  }
   return await postFormDataToPaths(
     [
       `/api/assessor/auth/expenses/${id}/${invId}`,
@@ -1214,12 +1250,18 @@ export async function submitFacilitatorFinanceInvoiceSupporting(
     formData.set("transaction_id", transactionId);
     formData.set("trans_id", transactionId);
   }
-  formData.set("supporting_document", payload.supportingDocument);
-  formData.set("supporting_doc", payload.supportingDocument);
-  formData.set("offline_tran_doc", payload.supportingDocument);
-  formData.set("offlineTranDoc", payload.supportingDocument);
-  formData.set("document", payload.supportingDocument);
-  formData.set("file", payload.supportingDocument);
+  await appendS3FileToFormData(formData, {
+    file: payload.supportingDocument,
+    folder: S3_FOLDERS.financePayment(projectId),
+    field: "supporting_document",
+    extraKeyFields: [
+      "supporting_doc_s3_key",
+      "offline_tran_doc_s3_key",
+      "offlineTranDoc_s3_key",
+      "document_s3_key",
+      "file_s3_key",
+    ],
+  });
   const type = invoiceType.trim().toLowerCase();
   const proformaPaths = [
     `/api/facilitator/projects/${id}/finance-v2/proforma/${invId}/submit-payment`,

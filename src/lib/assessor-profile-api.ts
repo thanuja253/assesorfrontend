@@ -1,5 +1,6 @@
 import { AuthApiError, getApiUrl, parseApiErrorMessage } from "@/lib/auth-api";
-import { AUTH_TOKEN_KEY, getAssessorIdFromStoredUser } from "@/lib/auth-user";
+import { AUTH_TOKEN_KEY, getAssessorIdFromStoredUser, getFacilitatorIdFromStoredUser } from "@/lib/auth-user";
+import { appendS3FileToFormData, S3_FOLDERS } from "@/lib/s3-upload";
 import type { AssessorProfileFormValues } from "@/lib/assessor-profile-map";
 
 async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
@@ -446,6 +447,57 @@ export function buildAssessorProfileFormData(
   });
 
   return fd;
+}
+
+const PROFILE_FILE_ALIASES: Partial<Record<AssessorProfileFileKey, string>> = {
+  biodata: "brief_profile_individual",
+  non_disclosure_agreement: "brief_profile_organization",
+  health_declaration: "projects_handled",
+};
+
+/** Presigned S3 upload (steps 1–2) then multipart metadata with `*_s3_key` (step 3). */
+export async function buildAssessorProfileFormDataWithS3(
+  values: AssessorProfileFormValues,
+  files: Partial<Record<AssessorProfileFileKey, File | null>>,
+  options?: Parameters<typeof buildAssessorProfileFormData>[2],
+): Promise<FormData> {
+  const fd = buildAssessorProfileFormData(values, files, options);
+  const entityId =
+    getFacilitatorIdFromStoredUser() ??
+    getAssessorIdFromStoredUser() ??
+    (values.email.trim() || "unknown");
+  const folder = S3_FOLDERS.generic(`profiles/facilitator/${entityId}`);
+  const token = getBearerToken();
+  if (!token) return fd;
+
+  const next = new FormData();
+  const uploads: Array<{ field: string; file: File; aliases: string[] }> = [];
+
+  for (const [field, value] of fd.entries()) {
+    if (value instanceof File) {
+      const aliases: string[] = [];
+      const alias = PROFILE_FILE_ALIASES[field as AssessorProfileFileKey];
+      if (alias) aliases.push(alias);
+      uploads.push({ field, file: value, aliases });
+      continue;
+    }
+    next.append(field, value);
+  }
+
+  for (const item of uploads) {
+    const key = await appendS3FileToFormData(next, {
+      file: item.file,
+      folder,
+      field: item.field,
+      token,
+    });
+    for (const alias of item.aliases) {
+      next.append(`${alias}_s3_key`, key);
+      next.append(`${alias}_key`, key);
+    }
+  }
+
+  return next;
 }
 
 export type IfscLookupData = {

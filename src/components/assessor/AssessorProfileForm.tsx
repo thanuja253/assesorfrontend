@@ -3,9 +3,10 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { AuthApiError, fetchIndustries, fetchStates, getApiUrl, type SelectOption } from "@/lib/auth-api";
+import { resolvePublicFileUrl } from "@/lib/s3-upload";
 import {
   type AssessorProfileFileKey,
-  buildAssessorProfileFormData,
+  buildAssessorProfileFormDataWithS3,
   getFacilitatorApprovalStatus,
   getFacilitatorByEmail,
   getAssessorMyProfile,
@@ -368,6 +369,8 @@ function resolveServerAssetUrl(value: string): string {
   if (/^(blob:|data:|https?:\/\/)/i.test(trimmed)) {
     return trimmed;
   }
+  const fromCdn = resolvePublicFileUrl(trimmed);
+  if (fromCdn.startsWith("http")) return fromCdn;
   const normalized = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
   return getApiUrl(normalized);
 }
@@ -1356,7 +1359,7 @@ export function AssessorProfileForm() {
     }
     setFieldErrors({});
 
-    const body = buildAssessorProfileFormData(form, files);
+    const body = await buildAssessorProfileFormDataWithS3(form, files);
     appendProfileSubmitMeta(body, finalSubmit, docStatuses);
     setSavingKind(finalSubmit ? "final" : "draft");
     setSaving(true);
