@@ -1,4 +1,8 @@
-/** Client-safe storage flags and public CDN URL. */
+/**
+ * Client-safe storage flags and public CDN URL.
+ * When true: files go to S3 via API presigned PUT; feature APIs receive `*_s3_key` fields.
+ * Env: NEXT_PUBLIC_API_BASE_URL, NEXT_PUBLIC_CLOUDFRONT_URL, auth token only (no AWS keys in Next.js).
+ */
 export function isS3StorageEnabled(): boolean {
   return process.env.NEXT_PUBLIC_USE_S3_STORAGE === "true";
 }
@@ -9,10 +13,4 @@ export function shouldKeepFormDataFilesWithS3(): boolean {
 
 export function getCloudfrontBaseUrl(): string {
   return (process.env.NEXT_PUBLIC_CLOUDFRONT_URL ?? "").replace(/\/$/, "");
-}
-
-export function getMaxUploadBytes(): number {
-  const mb = Number(process.env.STORAGE_MAX_UPLOAD_MB ?? "25");
-  if (!Number.isFinite(mb) || mb <= 0) return 25 * 1024 * 1024;
-  return Math.floor(mb * 1024 * 1024);
 }

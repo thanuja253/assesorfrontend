@@ -1,6 +1,6 @@
 import { shouldKeepFormDataFilesWithS3, isS3StorageEnabled } from "@/lib/storage/config";
 import type { BuildObjectKeyInput } from "@/lib/storage/s3-paths";
-import { uploadFileToStorage } from "@/lib/storage/upload-client";
+import { uploadFileToS3WithContext } from "@/lib/s3-upload";
 
 export type FormDataS3Context = {
   scope: BuildObjectKeyInput["scope"];
@@ -10,8 +10,8 @@ export type FormDataS3Context = {
 };
 
 /**
- * Upload File entries in FormData to S3 and append `{field}_url` + `{field}_key`.
- * Removes file blobs unless NEXT_PUBLIC_S3_KEEP_FORMDATA_FILES=true.
+ * Upload File entries to S3 (presigned PUT via API), then append `{field}_key` (+ optional URL).
+ * Removes file blobs unless NEXT_PUBLIC_S3_KEEP_FORMDATA_FILES=true (multipart bridge).
  */
 export async function augmentFormDataWithS3Uploads(
   formData: FormData,
@@ -33,7 +33,7 @@ export async function augmentFormDataWithS3Uploads(
   }
 
   for (const { field, file } of fileEntries) {
-    const uploaded = await uploadFileToStorage(file, {
+    const uploaded = await uploadFileToS3WithContext(file, {
       scope: context.scope,
       entityId: context.entityId,
       projectId: context.projectId,
@@ -41,8 +41,9 @@ export async function augmentFormDataWithS3Uploads(
       fieldName: field,
     });
 
-    next.append(`${field}_url`, uploaded.url);
     next.append(`${field}_key`, uploaded.key);
+    next.append(`${field}_s3_key`, uploaded.key);
+    next.append(`${field}_url`, uploaded.url);
     next.append(`${field}_storage`, "s3");
 
     if (keepFiles) {

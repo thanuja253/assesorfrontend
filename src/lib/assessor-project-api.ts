@@ -1,6 +1,8 @@
 import { API_CACHE_TTL, getCached, invalidateAfterProjectMutation } from "@/lib/api-cache";
 import { AuthApiError, getApiUrl, parseApiErrorMessage } from "@/lib/auth-api";
 import { AUTH_TOKEN_KEY } from "@/lib/auth-user";
+import { S3_FOLDERS, uploadFileToS3 } from "@/lib/s3-upload";
+import { isS3StorageEnabled, shouldKeepFormDataFilesWithS3 } from "@/lib/storage/config";
 
 function getStoredToken(): string | null {
   if (globalThis.window === undefined) {
@@ -23,6 +25,28 @@ function ensureProjectId(projectId: string): string {
     throw new AuthApiError(400, "Invalid project id.");
   }
   return id;
+}
+
+/** Step 1–2: presigned PUT; step 3 fields appended on FormData (multipart bridge optional). */
+async function appendExpenseDocumentToFormData(
+  formData: FormData,
+  projectId: string,
+  file: File,
+): Promise<void> {
+  const token = getStoredToken();
+  if (!isS3StorageEnabled() || !token) {
+    formData.set("regFeeInvoice", file);
+    return;
+  }
+
+  const key = await uploadFileToS3(file, S3_FOLDERS.financePayment(projectId), token);
+  formData.set("regFeeInvoice_s3_key", key);
+  formData.set("regFeeInvoice_key", key);
+  formData.set("s3_key", key);
+
+  if (shouldKeepFormDataFilesWithS3()) {
+    formData.set("regFeeInvoice", file);
+  }
 }
 
 function projectIdFromApiPaths(paths: string[]): string {
@@ -577,7 +601,7 @@ export async function createAdminExpenseInvoice(
   formData.set("payment_date", payload.payment_date);
   formData.set("payment_for", "expA");
   if (payload.regFeeInvoice) {
-    formData.set("regFeeInvoice", payload.regFeeInvoice);
+    await appendExpenseDocumentToFormData(formData, projectId, payload.regFeeInvoice);
   }
   return await postFormDataToPaths(
     [
@@ -619,7 +643,9 @@ export async function updateAdminExpenseInvoice(
   if (payload.igst !== undefined) formData.set("igst", payload.igst);
   if (payload.payment_date !== undefined) formData.set("payment_date", payload.payment_date);
   formData.set("payment_for", payload.payment_for ?? "expA");
-  if (payload.regFeeInvoice) formData.set("regFeeInvoice", payload.regFeeInvoice);
+  if (payload.regFeeInvoice) {
+    await appendExpenseDocumentToFormData(formData, projectId, payload.regFeeInvoice);
+  }
   return await postFormDataToPaths(
     [
       `/api/assessor/auth/expenses/${id}/${invId}`,

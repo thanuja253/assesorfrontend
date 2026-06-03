@@ -18,11 +18,5 @@ export function resolvePublicFileUrl(pathOrUrl: string): string {
     return `${cdn}/${key}`;
   }
 
-  if (typeof process !== "undefined" && process.env.AWS_S3_BUCKET) {
-    const bucket = process.env.AWS_S3_BUCKET.trim();
-    const region = process.env.AWS_REGION?.trim() || "ap-south-1";
-    return `https://${bucket}.s3.${region}.amazonaws.com/${key}`;
-  }
-
   return `/${key}`;
 }
