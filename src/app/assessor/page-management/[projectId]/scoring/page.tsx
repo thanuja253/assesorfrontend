@@ -11,7 +11,9 @@ import {
   getAdminAssessmentScoring,
   getCompanyAssessmentCriteriaBySector,
   getCompanyProjectQuickView,
+  loadProjectHybridContext,
 } from "@/lib/assessor-project-api";
+import { resolveFacilitatorProcessFromContext } from "@/lib/hybrid-workflow";
 import { SectionCard } from "../_ui";
 
 type CriteriaItem = {
@@ -245,21 +247,23 @@ export default function AssessorProjectScoringPage() {
         const submitLockKey = getSubmitLockStorageKey(projectId, selectedCriteriaId);
         const sessionStorageRef = globalThis.window?.sessionStorage;
         const storedSubmitLock = sessionStorageRef?.getItem(submitLockKey) === "1";
-        const [scoringPayload, quickViewPayload] = await Promise.all([
+        const [scoringPayload, hybridCtx] = await Promise.all([
           getAdminAssessmentScoring(projectId, selectedCriteriaId || undefined),
-          getCompanyProjectQuickView(projectId),
+          loadProjectHybridContext(projectId, "company"),
         ]);
         if (cancelled) return;
-        const isFacilitatorProcess = detectFacilitatorProcessType(quickViewPayload);
+        const isFacilitatorProcess = resolveFacilitatorProcessFromContext(
+          hybridCtx,
+          hybridCtx.quickview,
+        );
         const scoringObj = (scoringPayload.scoring as Record<string, unknown> | undefined) ?? {};
         const scoringRows = toRows(scoringObj.rows ?? scoringObj.data ?? scoringPayload.rows ?? []).map((row) => ({
           ...row,
           preliminary_score: resolvePreScore(row),
           coordinator_remarks:
-            row.coordinator_remarks ??
-            (row as Record<string, unknown>).coordinatorremarks ??
-            (row as Record<string, unknown>).remarks ??
-            "",
+            toStringSafe(row.coordinator_remarks) ||
+            toStringSafe((row as Record<string, unknown>).coordinatorremarks) ||
+            toStringSafe((row as Record<string, unknown>).remarks),
         }));
         setRows(scoringRows);
         const nextScores: Record<string, string> = {};

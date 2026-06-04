@@ -1,6 +1,11 @@
 import { API_CACHE_TTL, getCached, invalidateAfterProjectMutation } from "@/lib/api-cache";
 import { AuthApiError, getApiUrl, parseApiErrorMessage } from "@/lib/auth-api";
 import { AUTH_TOKEN_KEY } from "@/lib/auth-user";
+import {
+  buildHybridContext,
+  type HybridContext,
+  type WorkflowRole,
+} from "@/lib/hybrid-workflow";
 
 function getStoredToken(): string | null {
   if (globalThis.window === undefined) {
@@ -323,6 +328,109 @@ export async function getCompanyProjectQuickView(projectId: string): Promise<Rec
   return await getJsonFromPaths([
     `/api/company/projects/${id}/quickview`,
   ]);
+}
+
+/** Admin quickview — profile, docs, activity timeline (not hybrid step ids). */
+export async function getAdminProjectQuickView(projectId: string): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await getJsonFromPaths([`/api/admin/projects/${id}/quickview`]);
+}
+
+/** Hybrid stepper source of truth — admin. */
+export async function getAdminProjectWorkflowStatus(projectId: string): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await getJsonFromPaths([
+    `/api/admin/projects/${id}/workflow-status`,
+    `/api/admin/projects/${id}/workflow`,
+  ]);
+}
+
+/** Hybrid stepper source of truth — company (assessor/facilitator panels use this path). */
+export async function getCompanyProjectWorkflow(projectId: string): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await getJsonFromPaths([
+    `/api/company/projects/${id}/workflow`,
+    `/api/company/projects/${id}/workflow-status`,
+  ]);
+}
+
+export async function getWorkflowForRole(
+  projectId: string,
+  role: WorkflowRole,
+): Promise<Record<string, unknown>> {
+  return role === "admin"
+    ? getAdminProjectWorkflowStatus(projectId)
+    : getCompanyProjectWorkflow(projectId);
+}
+
+export async function getQuickviewForRole(
+  projectId: string,
+  role: WorkflowRole,
+): Promise<Record<string, unknown>> {
+  return role === "admin" ? getAdminProjectQuickView(projectId) : getCompanyProjectQuickView(projectId);
+}
+
+/** Admin assignments tab — coordinators, show_add_facilitator, facilitator row. */
+export async function getAdminProjectAssignments(projectId: string): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await getJsonFromPaths([`/api/admin/projects/${id}/assignments`]);
+}
+
+/**
+ * Load hybrid vs pure context per playbook §7.
+ * workflow_flow === 2 → stepper from workflow; quickview for profile/docs/timeline only.
+ */
+export async function loadProjectHybridContext(
+  projectId: string,
+  role: WorkflowRole = "company",
+): Promise<HybridContext> {
+  const [workflowResult, quickviewPayload, assignmentsPayload] = await Promise.all([
+    getWorkflowForRole(projectId, role).catch(() => ({ workflow_flow: 1 })),
+    getQuickviewForRole(projectId, role),
+    role === "admin"
+      ? getAdminProjectAssignments(projectId).catch(() => ({}))
+      : getCompanyProjectAssignments(projectId).catch(() => ({})),
+  ]);
+  return buildHybridContext(workflowResult, quickviewPayload, assignmentsPayload);
+}
+
+/** Admin once per project — enable hybrid (workflow_flow: 2, process_type: c). */
+export async function patchAdminProjectQuickviewData(
+  projectId: string,
+  body: { workflow_flow: number; process_type: string },
+): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  const path = `/api/admin/projects/${id}/quickview-data`;
+  const headers = authHeaders();
+  let response: Response;
+  try {
+    response = await fetch(getApiUrl(path), {
+      method: "PATCH",
+      headers: { ...headers, "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new AuthApiError(0, "Network error. Please try again.");
+  }
+  const data = await parseJsonSafe(response);
+  if (!response.ok) {
+    throw new AuthApiError(
+      response.status,
+      parseApiErrorMessage(data) ?? "Could not update project workflow.",
+    );
+  }
+  invalidateAfterProjectMutation(projectId);
+  return normalizePayload(data);
+}
+
+/** Manual workflow advance when domain API does not return workflow yet. */
+export async function advanceAdminProjectWorkflow(
+  projectId: string,
+  body: { completed_step_id: string; outcome: "success" | "reject" },
+): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(ensureProjectId(projectId));
+  return await postJsonToPaths([`/api/admin/projects/${id}/workflow/advance`], body);
 }
 
 export async function getCompanyProjectPrimaryData(projectId: string): Promise<Record<string, unknown>> {

@@ -89,10 +89,11 @@ export default function ProjectTabs({ tabs }: Readonly<{ tabs: TabItem[] }>) {
   return (
     <nav className="flex flex-wrap items-end gap-x-1 gap-y-1 border-b border-slate-200">
       {tabs.map((tab) => {
+        const path = pathname ?? "";
         const isActive =
           tab.key === "expenses"
-            ? pathname === tab.href || pathname.startsWith(`${tab.href}/`)
-            : pathname === tab.href;
+            ? path === tab.href || path.startsWith(`${tab.href}/`)
+            : path === tab.href;
         return (
           <Link
             key={tab.key}

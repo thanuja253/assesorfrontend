@@ -7,10 +7,16 @@ import { refreshAssessorNotifications } from "@/lib/assessor-notifications-api";
 import {
   getAdminProjectRegistrationData,
   getCompanyCoordinators,
-  getCompanyProjectAssignments,
   getCompanyProjectFacilitatorRegistrationInfo,
-  getCompanyProjectQuickView,
+  loadProjectHybridContext,
 } from "@/lib/assessor-project-api";
+import {
+  buildStepperFromWorkflow,
+  resolveHybridStepIndex,
+  shouldShowAddFacilitator,
+  workflowStepPairFromStatus,
+  type HybridContext,
+} from "@/lib/hybrid-workflow";
 import { KVRow, SectionCard, normalizeRecords, textValue } from "../_ui";
 
 function pickFirstRecord(source: Record<string, unknown>, keys: string[]): Record<string, unknown> {
@@ -385,6 +391,7 @@ export default function AssessorProjectQuickViewPage() {
   const projectId = typeof routeParams?.projectId === "string" ? routeParams.projectId : "";
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [hybridContext, setHybridContext] = useState<HybridContext | null>(null);
   const [quickView, setQuickView] = useState<Record<string, unknown>>({});
   const [assignments, setAssignments] = useState<Record<string, unknown>>({});
   const [coordinatorCatalog, setCoordinatorCatalog] = useState<Record<string, unknown>[]>([]);
@@ -410,20 +417,20 @@ export default function AssessorProjectQuickViewPage() {
     }
     setLoading(true);
     setError("");
-    void Promise.all([
-      getCompanyProjectQuickView(projectId),
-      getCompanyProjectAssignments(projectId),
-      getCompanyCoordinators(),
-    ])
-      .then(async ([quickViewPayload, assignmentsPayload, coordinatorsPayload]) => {
+    void Promise.all([loadProjectHybridContext(projectId, "company"), getCompanyCoordinators()])
+      .then(async ([ctx, coordinatorsPayload]) => {
         if (cancelled) return;
         refreshAssessorNotifications();
-        setQuickView(quickViewPayload);
-        setAssignments(assignmentsPayload);
+        setHybridContext(ctx);
+        setQuickView(ctx.quickview);
+        setAssignments(ctx.assignments);
         const list = pickRecordList(coordinatorsPayload, ["items", "rows", "data", "coordinators", "result"]);
         setCoordinatorCatalog(list);
 
-        const isFacilitatorProcess = detectFacilitatorProcessType(quickViewPayload);
+        const isFacilitatorProcess =
+          ctx.mode === "hybrid"
+            ? ctx.processType === "f"
+            : detectFacilitatorProcessType(ctx.quickview);
         if (!isFacilitatorProcess) {
           setRegistrationData(null);
           setFacilitatorRegistrationInfo(null);
@@ -447,6 +454,7 @@ export default function AssessorProjectQuickViewPage() {
       .catch((e: unknown) => {
         if (cancelled) return;
         setError(e instanceof AuthApiError ? e.message : "Could not load quick view.");
+        setHybridContext(null);
         setQuickView({});
         setAssignments({});
         setCoordinatorCatalog([]);
@@ -461,10 +469,31 @@ export default function AssessorProjectQuickViewPage() {
     };
   }, [projectId]);
 
-  const isFacFlow2 = detectFacilitatorProcessType(quickView) && isCiiAssignsFacilitatorFlow(quickView);
-  const flow2StepsMemo = useMemo(() => (isFacFlow2 ? resolveFlow2Steps(quickView) : null), [isFacFlow2, quickView]);
-  const flow2AidMemo = useMemo(() => resolveActivityId(quickView), [quickView]);
-  const flow2IdxMemo = flow2AidMemo !== null ? (FLOW2_AID_TO_INDEX[flow2AidMemo] ?? -1) : -1;
+  const isHybrid = hybridContext?.mode === "hybrid";
+  const isFacFlow2Legacy =
+    !isHybrid && detectFacilitatorProcessType(quickView) && isCiiAssignsFacilitatorFlow(quickView);
+  const flow2StepsMemo = useMemo(() => {
+    if (isHybrid) return workflowStepPairFromStatus(hybridContext.workflow);
+    if (isFacFlow2Legacy) return resolveFlow2Steps(quickView);
+    return null;
+  }, [isHybrid, hybridContext, isFacFlow2Legacy, quickView]);
+  const flow2AidMemo = useMemo(() => {
+    if (isHybrid) return hybridContext.stepId;
+    return resolveActivityId(quickView);
+  }, [isHybrid, hybridContext, quickView]);
+  const flow2IdxMemo = useMemo(() => {
+    if (isHybrid) return resolveHybridStepIndex(hybridContext.workflow);
+    return flow2AidMemo !== null ? (FLOW2_AID_TO_INDEX[flow2AidMemo] ?? -1) : -1;
+  }, [isHybrid, hybridContext, flow2AidMemo, quickView]);
+  const milestoneSteps = useMemo(() => {
+    if (isHybrid) {
+      const fromApi = buildStepperFromWorkflow(hybridContext.workflow);
+      if (fromApi.length > 0) {
+        return fromApi.map((step) => ({ label: step.label, responsibility: step.responsibility }));
+      }
+    }
+    return FLOW2_STEPS;
+  }, [isHybrid, hybridContext]);
 
   if (loading) return <p className="text-sm text-[#667083]">Loading…</p>;
   if (error) return <p className="text-sm text-[#a94442]">{error}</p>;
@@ -538,8 +567,15 @@ export default function AssessorProjectQuickViewPage() {
     "facilitator_detail",
     "assigned_facilitator",
   ]);
-  const isFacilitatorProcess = detectFacilitatorProcessType(quickView);
-  const isFlow2 = isFacFlow2;
+  const isFacilitatorProcess =
+    hybridContext?.mode === "hybrid"
+      ? hybridContext.processType === "f"
+      : detectFacilitatorProcessType(quickView);
+  const isFlow2 = isHybrid || isFacFlow2Legacy;
+  const showFacilitatorAssign =
+    isHybrid && hybridContext
+      ? shouldShowAddFacilitator(hybridContext.workflow, assignments)
+      : false;
   const registrationFacilitator = mergeSelectedFacilitatorFromRegistration(
     registrationData,
     facilitatorRegistrationInfo,
@@ -563,6 +599,26 @@ export default function AssessorProjectQuickViewPage() {
 
   return (
     <div className="space-y-2">
+      {isHybrid && hybridContext ? (
+        <div className="rounded border border-[#c7daf5] bg-[#eef5ff] px-3 py-2 text-xs text-[#1e3a5f]">
+          <p>
+            <span className="font-semibold">Hybrid workflow</span>
+            {" · "}
+            Phase: {hybridContext.phase === "facilitator" || hybridContext.processType === "f" ? "Facilitator" : "CII"}
+            {" · "}
+            Step {hybridContext.stepId}
+          </p>
+          <p className="mt-1">
+            Next: {hybridContext.next} ({hybridContext.nextResp})
+          </p>
+          {showFacilitatorAssign ? (
+            <p className="mt-1 font-medium text-[#9a6a0a]">
+              Action required: assign facilitator (step 64, still CII phase).
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="grid gap-3 xl:grid-cols-2">
         <SectionCard title="Company Details">
           <KVRow label="Company Name" value={companyName} />
@@ -707,7 +763,7 @@ export default function AssessorProjectQuickViewPage() {
         <div className="grid gap-3 xl:grid-cols-2">
           <SectionCard title="Company Activity Log">
             <div className="space-y-0">
-              {FLOW2_STEPS.map((step, idx) => {
+              {milestoneSteps.map((step, idx) => {
                 const isDone = idx < flow2CurrentIndex;
                 const isCurrent = idx === flow2CurrentIndex;
                 let stateColor = "bg-[#cbd5e1]";
@@ -722,8 +778,8 @@ export default function AssessorProjectQuickViewPage() {
                 }
 
                 return (
-                  <div key={`log-${step.label}`} className="relative flex items-start gap-3 pb-3 last:pb-0">
-                    {idx < FLOW2_STEPS.length - 1 ? (
+                  <div key={`log-${step.label}-${idx}`} className="relative flex items-start gap-3 pb-3 last:pb-0">
+                    {idx < milestoneSteps.length - 1 ? (
                       <span className="absolute left-[5px] top-4 bottom-0 w-px bg-[#cfd8e3]" />
                     ) : null}
                     <span className={`mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${stateColor}`} />
@@ -739,11 +795,11 @@ export default function AssessorProjectQuickViewPage() {
 
           <SectionCard title="Company Milestone Flow">
             <div className="space-y-0">
-              {FLOW2_STEPS.map((step, idx) => {
+              {milestoneSteps.map((step, idx) => {
                 const done = idx <= flow2CurrentIndex;
                 return (
-                  <div key={`ms-${step.label}`} className="relative flex items-start gap-3 pb-3 last:pb-0">
-                    {idx < FLOW2_STEPS.length - 1 ? (
+                  <div key={`ms-${step.label}-${idx}`} className="relative flex items-start gap-3 pb-3 last:pb-0">
+                    {idx < milestoneSteps.length - 1 ? (
                       <span className="absolute left-[5px] top-4 bottom-0 w-px bg-[#cfd8e3]" />
                     ) : null}
                     <span className={`mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${done ? "bg-[#22c55e]" : "bg-[#cbd5e1]"}`} />

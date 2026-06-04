@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { getCompanyProjectQuickView } from "@/lib/assessor-project-api";
-import { detectFacilitatorProcessType } from "./_finance-helpers";
+import { loadProjectHybridContext } from "@/lib/assessor-project-api";
+import { resolveFacilitatorProcessFromContext } from "@/lib/hybrid-workflow";
 
 export default function ExpensesLayout({ children }: Readonly<{ children: ReactNode }>) {
   const params = useParams<{ projectId: string }>();
@@ -18,9 +18,9 @@ export default function ExpensesLayout({ children }: Readonly<{ children: ReactN
       return;
     }
     let cancelled = false;
-    getCompanyProjectQuickView(projectId)
-      .then((qv) => {
-        if (!cancelled) setIsFacilitatorProcess(detectFacilitatorProcessType(qv));
+    loadProjectHybridContext(projectId, "company")
+      .then((ctx) => {
+        if (!cancelled) setIsFacilitatorProcess(resolveFacilitatorProcessFromContext(ctx, ctx.quickview));
       })
       .catch(() => {
         if (!cancelled) setIsFacilitatorProcess(false);

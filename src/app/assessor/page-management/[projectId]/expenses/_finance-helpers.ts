@@ -1,20 +1,4 @@
-export function detectFacilitatorProcessType(quickView: Record<string, unknown>): boolean {
-  const profile = (quickView.profile as Record<string, unknown> | undefined) ?? {};
-  const project = (quickView.project as Record<string, unknown> | undefined) ?? {};
-  const company = (quickView.company as Record<string, unknown> | undefined) ?? {};
-  const raw =
-    profile.process_type ??
-    profile.processType ??
-    project.process_type ??
-    project.processType ??
-    company.process_type ??
-    company.processType ??
-    quickView.process_type ??
-    quickView.processType;
-  const text =
-    typeof raw === "string" || typeof raw === "number" ? String(raw).trim().toLowerCase() : "";
-  return text === "f";
-}
+export { detectFacilitatorProcessType } from "@/lib/hybrid-workflow";
 
 export function pickFinanceV2Invoices(payload: Record<string, unknown> | null): Record<string, unknown>[] {
   if (!payload) return [];
