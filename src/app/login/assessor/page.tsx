@@ -10,7 +10,7 @@ import {
   AUTH_USER_STORAGE_KEY,
 } from "@/lib/auth-user";
 import { AuthApiError, loginFacilitator } from "@/lib/auth-api";
-import { isValidEmailFormat } from "@/lib/validation";
+import { getEmailValidationError } from "@/lib/validation";
 
 const highlights = [
   {
@@ -99,11 +99,9 @@ export default function AssessorLoginPage() {
 
     const trimmedEmail = email.trim();
     let hasError = false;
-    if (!trimmedEmail) {
-      setEmailError("Email must not be empty.");
-      hasError = true;
-    } else if (!isValidEmailFormat(trimmedEmail)) {
-      setEmailError("Please enter a valid email format.");
+    const nextEmailError = getEmailValidationError(email);
+    if (nextEmailError) {
+      setEmailError(nextEmailError);
       hasError = true;
     }
 
@@ -222,31 +220,10 @@ export default function AssessorLoginPage() {
                   onChange={(event) => {
                     const next = event.target.value;
                     setEmail(next);
-
-                    const trimmed = next.trim();
-                    if (!trimmed) {
-                      // Don't show "empty" error while typing; show it on submit.
-                      setEmailError("");
-                      return;
-                    }
-                    if (!isValidEmailFormat(trimmed)) {
-                      setEmailError("Please enter a valid email format.");
-                      return;
-                    }
-                    // Clear backend login errors as soon as user edits to a valid email.
-                    setEmailError("");
+                    setEmailError(getEmailValidationError(next, { allowEmptyWhileTyping: true }));
                   }}
                   onBlur={() => {
-                    const trimmed = email.trim();
-                    if (!trimmed) {
-                      setEmailError("Email must not be empty.");
-                      return;
-                    }
-                    if (!isValidEmailFormat(trimmed)) {
-                      setEmailError("Please enter a valid email format.");
-                      return;
-                    }
-                    setEmailError("");
+                    setEmailError(getEmailValidationError(email));
                   }}
                   placeholder="Enter your email"
                   className={`w-full rounded-xl px-4 py-2.5 text-sm text-[#1e2923] outline-none transition ${

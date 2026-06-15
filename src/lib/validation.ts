@@ -25,3 +25,23 @@ export function isValidEmailFormat(value: string): boolean {
 
   return true;
 }
+
+const EMAIL_VALIDATION_MESSAGE = "Please enter a valid email.";
+
+/** Returns a user-facing error, or "" when the value is acceptable. */
+export function getEmailValidationError(
+  value: string,
+  options?: { allowEmptyWhileTyping?: boolean },
+): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    if (options?.allowEmptyWhileTyping && value.length === 0) {
+      return "";
+    }
+    return EMAIL_VALIDATION_MESSAGE;
+  }
+  if (!isValidEmailFormat(trimmed)) {
+    return EMAIL_VALIDATION_MESSAGE;
+  }
+  return "";
+}
